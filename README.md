@@ -75,6 +75,8 @@ args = ["mcp-master-of-puppets"]
 AGENTS_ROOT = "."
 ```
 
+Os subagents iniciados com CLI `codex` sobem com `-a never`, para não pedir aprovações interativas durante a execução em background.
+
 ## Estrutura de pastas criada
 
 ```

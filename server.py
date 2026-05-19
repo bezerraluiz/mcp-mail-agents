@@ -715,7 +715,7 @@ async def mailbox_spawn_agents(agents: List[dict]) -> str:
     _CLI_CMD = {
         "claude": "claude -p --dangerously-skip-permissions",
         "gemini": "gemini --model auto --approval-mode yolo --prompt",
-        "codex":  "codex",
+        "codex":  "codex -a never",
     }
 
     prompts_dir = Path(__file__).parent / "prompts"
