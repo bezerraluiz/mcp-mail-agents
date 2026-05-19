@@ -1,4 +1,4 @@
-# mcp-mail-agents
+# mcp-master-of-puppets
 
 Servidor MCP para comunicação assíncrona entre agentes de IA via caixas de entrada baseadas em arquivos.
 
@@ -31,14 +31,14 @@ decisões e evita conflitos de trabalho paralelo — tudo em arquivos rastreáve
 ## Instalação e execução
 
 ```bash
-uvx mcp-mail-agents
+uvx mcp-master-of-puppets
 ```
 
 Ou com pip:
 
 ```bash
-pip install mcp-mail-agents
-mcp-mail-agents
+pip install mcp-master-of-puppets
+mcp-master-of-puppets
 ```
 
 ## Configuração no Claude Code
@@ -50,7 +50,7 @@ Adicione ao `.claude/settings.json` do seu projeto:
   "mcpServers": {
     "mail-agents": {
       "command": "uvx",
-      "args": ["mcp-mail-agents"],
+      "args": ["mcp-master-of-puppets"],
       "env": {
         "AGENTS_ROOT": "."
       }
@@ -69,7 +69,7 @@ Adicione ao `~/.codex/config.toml`:
 [[mcp_servers]]
 name = "mail-agents"
 command = "uvx"
-args = ["mcp-mail-agents"]
+args = ["mcp-master-of-puppets"]
 
 [mcp_servers.env]
 AGENTS_ROOT = "."
@@ -158,7 +158,7 @@ git tag v0.1.1
 git push && git push --tags
 ```
 
-Após a publicação, usuários que usam `uvx mcp-mail-agents` receberão a versão mais recente
+Após a publicação, usuários que usam `uvx mcp-master-of-puppets` receberão a versão mais recente
 automaticamente na próxima execução.
 
 ## Licença
