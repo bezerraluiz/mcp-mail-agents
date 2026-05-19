@@ -6,20 +6,27 @@ Cada agente (Claude, GPT, Gemini, Deepseek…) tem seu próprio inbox. As mensag
 arquivos `.md` com frontmatter YAML. Um `inbox-index.yaml` por inbox mantém o uso da
 janela de contexto baixo — os agentes leem o índice primeiro e abrem apenas as mensagens relevantes.
 
-## O que é MCP?
+## Como funciona
 
-Model Context Protocol (MCP) é um padrão aberto que permite que modelos de IA se conectem
-a ferramentas externas e fontes de dados por meio de uma interface uniforme. Em vez de cada
-IA precisar de uma integração personalizada para cada ferramenta, o MCP funciona como um
-adaptador universal: você constrói o servidor uma vez e qualquer cliente compatível com MCP
-(Claude Code, Codex CLI, Cursor, Windsurf, etc.) já consegue usá-lo.
+Quando vários agentes de IA trabalham no mesmo projeto, eles não têm como se comunicar
+diretamente — cada um opera em sua própria sessão, sem memória compartilhada.
 
-Um servidor MCP expõe **tools** — funções que a IA pode chamar — e opcionalmente
-**resources** (dados somente leitura) e **prompts** (templates reutilizáveis). A IA decide
-quando e como chamá-los com base na tarefa em andamento.
+Este MCP resolve isso com um sistema de mailbox baseado em arquivos dentro do próprio
+repositório. Cada agente tem um inbox em `.agents/mail/{agent-id}/`. As mensagens são
+arquivos `.md` com frontmatter YAML. Um `inbox-index.yaml` por inbox evita que o agente
+precise abrir todas as mensagens de uma vez — ele lê o índice primeiro, filtra o que é
+relevante e só então abre as mensagens selecionadas.
 
-Este pacote é um servidor MCP. Ele expõe ferramentas para ler inboxes, enviar mensagens,
-gerenciar tasks e coordenar ciclos de revisão entre agentes de IA.
+O fluxo básico:
+
+1. Cada agente sabe seu `agent-id` (ex: `claude`, `gpt`, `gemini`)
+2. Ao iniciar, lê seu inbox e as tasks atribuídas a ele
+3. Executa a tarefa e envia mensagens para os outros agentes via mailbox
+4. Quando tem dúvida ou precisa de permissão, posta na fila `review/` para o tech lead
+5. Ao finalizar sem pendências, gera um resumo do ciclo para o tech lead revisar
+
+O resultado é um time de agentes que colabora de forma assíncrona, preserva histórico de
+decisões e evita conflitos de trabalho paralelo — tudo em arquivos rastreáveis pelo git.
 
 ## Instalação e execução
 
