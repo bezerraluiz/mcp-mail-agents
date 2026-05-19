@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "mail-agents": {
+      "command": "python",
+      "args": ["/home/ti/Desktop/mcp-mail-agents/server.py"],
+      "env": {
+        "AGENTS_ROOT": "."
+      }
+    }
+  }
+}
