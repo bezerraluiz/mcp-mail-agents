@@ -15,20 +15,16 @@ import fcntl
 import os
 import re
 import shutil
-import subprocess
 import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import List
+from typing import Callable, List
 
 import yaml
 from mcp.server.fastmcp import FastMCP
 
 mcp = FastMCP("AI Mailbox")
-
-_ANSI_RE = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
-
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -63,6 +59,28 @@ def _now_file() -> str:
 def _safe_slug(text: str) -> str:
     return re.sub(r"[^a-zA-Z0-9_-]", "-", text).strip("-")
 
+def _validate_agent_id(agent_id: str, require_role: bool = False) -> str | None:
+    if not agent_id:
+        return "agent_id cannot be empty"
+    if not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", agent_id):
+        return (
+            f"invalid agent_id '{agent_id}'. "
+            "Use lowercase letters, numbers and hyphens only."
+        )
+    if require_role and "-" not in agent_id:
+        return (
+            f"invalid subagent id '{agent_id}'. "
+            "Use the format 'agentname-role', for example 'claude-backend-senior'."
+        )
+    return None
+
+def _validate_subagent_ids(agent_ids: List[str]) -> str | None:
+    for agent_id in agent_ids:
+        error = _validate_agent_id(agent_id, require_role=True)
+        if error:
+            return error
+    return None
+
 def _ensure_inbox(agent_id: str) -> None:
     d = _inbox_dir(agent_id)
     d.mkdir(parents=True, exist_ok=True)
@@ -82,16 +100,24 @@ def _write_index(agent_id: str, data: dict) -> None:
         yaml.dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8"
     )
 
-def _append_to_index(agent_id: str, entry: dict) -> None:
-    idx = _inbox_index(agent_id)
+def _mutate_yaml_index(idx: Path, mutate: Callable[[dict], None]) -> dict:
+    idx.parent.mkdir(parents=True, exist_ok=True)
     with open(idx, "a+", encoding="utf-8") as fh:
         fcntl.flock(fh, fcntl.LOCK_EX)
         fh.seek(0)
         data = yaml.safe_load(fh.read()) or {"messages": []}
-        data.setdefault("messages", []).append(entry)
+        mutate(data)
         fh.seek(0)
         fh.truncate()
         fh.write(yaml.dump(data, allow_unicode=True, sort_keys=False))
+        fh.flush()
+        return data
+
+def _append_to_index(agent_id: str, entry: dict) -> None:
+    def mutate(data: dict) -> None:
+        data.setdefault("messages", []).append(entry)
+
+    _mutate_yaml_index(_inbox_index(agent_id), mutate)
 
 def _read_dir_index(directory: Path) -> dict:
     idx = directory / "inbox-index.yaml"
@@ -104,15 +130,10 @@ def _write_dir_index(directory: Path, data: dict) -> None:
     idx.write_text(yaml.dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8")
 
 def _append_dir_index(directory: Path, entry: dict) -> None:
-    idx = directory / "inbox-index.yaml"
-    with open(idx, "a+", encoding="utf-8") as fh:
-        fcntl.flock(fh, fcntl.LOCK_EX)
-        fh.seek(0)
-        data = yaml.safe_load(fh.read()) or {"messages": []}
+    def mutate(data: dict) -> None:
         data.setdefault("messages", []).append(entry)
-        fh.seek(0)
-        fh.truncate()
-        fh.write(yaml.dump(data, allow_unicode=True, sort_keys=False))
+
+    _mutate_yaml_index(directory / "inbox-index.yaml", mutate)
 
 def _build_message(from_id: str, to: str, subject: str, body: str) -> str:
     return (
@@ -147,6 +168,21 @@ def _mark_md_read(path: Path) -> None:
         path.write_text(updated, encoding="utf-8")
 
 
+def _mark_index_message_read(idx: Path, filename: str) -> bool:
+    was_found = False
+
+    def mutate(data: dict) -> None:
+        nonlocal was_found
+        for msg in data.get("messages", []):
+            if msg.get("file") == filename:
+                msg["status"] = "read"
+                was_found = True
+                return
+
+    _mutate_yaml_index(idx, mutate)
+    return was_found
+
+
 @mcp.tool()
 def mailbox_read_message(agent_id: str, filename: str) -> str:
     """Read a specific message from an agent's inbox and automatically mark it as read."""
@@ -155,12 +191,7 @@ def mailbox_read_message(agent_id: str, filename: str) -> str:
         return f"ERROR: message not found — {filename}"
     content = path.read_text(encoding="utf-8")
     _mark_md_read(path)
-    data = _read_index(agent_id)
-    for msg in data.get("messages", []):
-        if msg.get("file") == filename:
-            msg["status"] = "read"
-            break
-    _write_index(agent_id, data)
+    _mark_index_message_read(_inbox_index(agent_id), filename)
     return content
 
 
@@ -168,12 +199,7 @@ def mailbox_read_message(agent_id: str, filename: str) -> str:
 def mailbox_mark_read(agent_id: str, filename: str) -> str:
     """Mark a message as read in the inbox index and in the message file's frontmatter."""
     _mark_md_read(_inbox_dir(agent_id) / filename)
-    data = _read_index(agent_id)
-    for msg in data.get("messages", []):
-        if msg.get("file") == filename:
-            msg["status"] = "read"
-            break
-    _write_index(agent_id, data)
+    _mark_index_message_read(_inbox_index(agent_id), filename)
     return f"Marked as read: {filename}"
 
 
@@ -191,6 +217,11 @@ def mailbox_send_message(from_id: str, to_id: str, subject: str, body: str) -> s
       ## Perguntas
       ## Próxima Ação Sugerida
     """
+    for agent_id in (from_id, to_id):
+        error = _validate_agent_id(agent_id)
+        if error:
+            return f"ERROR: {error}"
+
     slug = _safe_slug(subject)
     filename = f"{_now_file()}-{from_id}-{to_id}-{slug}.md"
     content = _build_message(from_id, to_id, subject, body)
@@ -217,6 +248,13 @@ def mailbox_send_broadcast(from_id: str, subject: str, body: str, recipients: Li
     recipients: list of agent IDs (e.g. ["claude", "gpt", "gemini"]).
     The same file is written to each inbox and to .agents/mail/all/.
     """
+    error = _validate_agent_id(from_id)
+    if error:
+        return f"ERROR: {error}"
+    error = _validate_subagent_ids(recipients)
+    if error:
+        return f"ERROR: {error}"
+
     slug = _safe_slug(subject)
     filename = f"{_now_file()}-{from_id}-all-{slug}.md"
     content = _build_message(from_id, "all", subject, body)
@@ -283,6 +321,10 @@ def mailbox_create_review(from_id: str, subject: str, body: str) -> str:
       ## Pontos para Revisão
       ## Próxima Ação Sugerida
     """
+    error = _validate_agent_id(from_id)
+    if error:
+        return f"ERROR: {error}"
+
     review_dir = _mail_dir() / "review"
     review_dir.mkdir(parents=True, exist_ok=True)
 
@@ -330,6 +372,11 @@ def mailbox_list_tasks(agent_id: str = "*") -> str:
     Pass agent_id to filter by prefix (e.g. "codex"), or "*" to list all tasks.
     Returns filenames — use mailbox_read_task to open one.
     """
+    if agent_id != "*":
+        error = _validate_agent_id(agent_id)
+        if error:
+            return f"ERROR: {error}"
+
     td = _tasks_dir()
     if not td.exists():
         return f"No tasks directory found at {td}"
@@ -457,8 +504,17 @@ def mailbox_session_status() -> str:
         data = _read_index(agent_id)
         messages = data.get("messages", [])
         unread = sum(1 for m in messages if m.get("status") == "unread")
+        pid_path = _agent_pid_path(agents_root, agent_id)
+        pid_value = "none"
+        process_state = "missing"
+        if pid_path.exists():
+            pid_value = pid_path.read_text(encoding="utf-8").strip() or "unknown"
+            process_state = "running"
+
         lines.append(f"### {agent_id}")
         lines.append(f"  inbox: {len(messages)} message(s), {unread} unread")
+        lines.append(f"  pid: {pid_value}")
+        lines.append(f"  process: {process_state}")
 
         hb_path = agents_root / ".agents" / "pids" / f"{agent_id}.heartbeat"
         if hb_path.exists():
@@ -487,34 +543,6 @@ def mailbox_session_status() -> str:
 
 
 @mcp.tool()
-def mailbox_write_snapshot(note: str = "") -> str:
-    """
-    Append a timestamped snapshot of the current session status to
-    .agents/session-log.md in the project root.
-
-    Call this periodically during monitoring to build an audit trail of
-    the session progress that persists in the repository.
-
-    note: optional free-text annotation added to this snapshot entry
-    """
-    status = mailbox_session_status()
-    timestamp = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
-    log_path = _mail_dir() / "session-log.md"
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-
-    entry_lines = [f"\n## Snapshot — {timestamp}"]
-    if note:
-        entry_lines.append(f"\n> {note}\n")
-    entry_lines.append(f"\n{status}\n")
-    entry_lines.append("---")
-
-    with log_path.open("a", encoding="utf-8") as f:
-        f.write("\n".join(entry_lines) + "\n")
-
-    return f"Snapshot written to {log_path} at {timestamp}."
-
-
-@mcp.tool()
 def mailbox_read_rules() -> str:
     """Read .agents/mail/mailbox-rules.md (the condensed rules file for agents)."""
     path = _mail_dir() / "mailbox-rules.md"
@@ -524,87 +552,22 @@ def mailbox_read_rules() -> str:
 
 
 @mcp.tool()
-def mailbox_log_tokens(agent_id: str, tokens_in: int, tokens_out: int) -> str:
-    """
-    Log token usage for an agent. Call this whenever completing a significant task step.
-    tokens_in:  input/prompt tokens consumed
-    tokens_out: output/completion tokens generated
-    """
-    log_path = _mail_dir() / "token-log.yaml"
-    data: dict = {"entries": []}
-    if log_path.exists():
-        data = yaml.safe_load(log_path.read_text(encoding="utf-8")) or data
-
-    entry = {
-        "agent_id": agent_id,
-        "timestamp": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "tokens_in": tokens_in,
-        "tokens_out": tokens_out,
-        "total": tokens_in + tokens_out,
-    }
-    data["entries"].append(entry)
-    log_path.write_text(yaml.dump(data, allow_unicode=True), encoding="utf-8")
-    return f"Logged: {agent_id} — in={tokens_in} out={tokens_out} total={tokens_in + tokens_out}"
-
-
-@mcp.tool()
-def mailbox_token_stats() -> str:
-    """
-    Return a structured token usage report for the current session.
-    Includes per-agent totals, averages, and session-wide highlights.
-    """
-    log_path = _mail_dir() / "token-log.yaml"
-    if not log_path.exists():
-        return "No token data recorded yet."
-
-    data = yaml.safe_load(log_path.read_text(encoding="utf-8")) or {}
-    entries = data.get("entries", [])
-    if not entries:
-        return "No token data recorded yet."
-
-    from collections import defaultdict
-    agents: dict = defaultdict(lambda: {"calls": 0, "tokens_in": 0, "tokens_out": 0, "total": 0, "peak": 0})
-
-    for e in entries:
-        aid = e["agent_id"]
-        agents[aid]["calls"] += 1
-        agents[aid]["tokens_in"] += e["tokens_in"]
-        agents[aid]["tokens_out"] += e["tokens_out"]
-        agents[aid]["total"] += e["total"]
-        agents[aid]["peak"] = max(agents[aid]["peak"], e["total"])
-
-    lines = ["## Token Usage Report", ""]
-    grand_total = 0
-    highest_agent = max(agents.items(), key=lambda x: x[1]["total"])
-
-    for aid, s in sorted(agents.items(), key=lambda x: x[1]["total"], reverse=True):
-        avg = s["total"] // s["calls"] if s["calls"] else 0
-        lines.append(f"### {aid}")
-        lines.append(f"  calls   : {s['calls']}")
-        lines.append(f"  in      : {s['tokens_in']:,}")
-        lines.append(f"  out     : {s['tokens_out']:,}")
-        lines.append(f"  total   : {s['total']:,}")
-        lines.append(f"  avg/call: {avg:,}")
-        lines.append(f"  peak    : {s['peak']:,}")
-        lines.append("")
-        grand_total += s["total"]
-
-    lines.append("---")
-    lines.append(f"grand total : {grand_total:,}")
-    lines.append(f"highest agent: {highest_agent[0]} ({highest_agent[1]['total']:,} tokens)")
-
-    return "\n".join(lines)
-
-
-@mcp.tool()
 def mailbox_init_session(leader_id: str, agent_ids: List[str]) -> str:
     """
     Initialize a multi-agent session: create inboxes for all participants,
     ensure review/ and all/ directories exist, and write mailbox-rules.md.
 
     leader_id: the agent acting as leader/orchestrator
-    agent_ids: list of all other agent IDs (workers + QA)
+    agent_ids: list of all other agent IDs (workers + QA), using the format
+    'agentname-role' (for example: 'claude-backend-senior')
     """
+    error = _validate_agent_id(leader_id)
+    if error:
+        return f"ERROR: {error}"
+    error = _validate_subagent_ids(agent_ids)
+    if error:
+        return f"ERROR: {error}"
+
     all_ids = [leader_id] + [a for a in agent_ids if a != leader_id]
     for aid in all_ids:
         _ensure_inbox(aid)
@@ -623,11 +586,12 @@ def mailbox_init_session(leader_id: str, agent_ids: List[str]) -> str:
         f"## Líder\n`{leader_id}` — responsável por ler a task, delegar e fazer a revisão final.\n\n"
         "## Protocolo\n\n"
         "1. O líder lê a task com `mailbox_list_tasks` / `mailbox_read_task` e determina o cargo de cada worker.\n"
-        "2. O líder delega trabalho **exclusivamente via `mailbox_send_message`** — nunca criando ou editando arquivos em `.agents/tasks/`.\n"
-        "3. Workers aguardam com `mailbox_watch_inbox` e executam conforme cargo definido pelo líder.\n"
-        "4. Workers enviam resultado ao QA via `mailbox_send_message`.\n"
-        "5. O QA consolida, posta em `review/` via `mailbox_create_review` e notifica o líder.\n"
-        "6. O líder lê o review do QA, faz revisão final e posta relatório consolidado em `review/`.\n\n"
+        "2. Todo subagent deve usar ID no formato `agentname-role` (ex: `claude-backend-senior`) e seu inbox deve refletir exatamente esse nome.\n"
+        "3. O líder delega trabalho **exclusivamente via `mailbox_send_message`** — nunca criando ou editando arquivos em `.agents/tasks/`.\n"
+        "4. Workers aguardam com `mailbox_watch_inbox` e executam conforme cargo definido pelo líder.\n"
+        "5. Workers enviam resultado ao QA via `mailbox_send_message`.\n"
+        "6. O QA consolida, posta em `review/` via `mailbox_create_review` e notifica o líder.\n"
+        "7. O líder lê o review do QA, faz revisão final e posta relatório consolidado em `review/`.\n\n"
         "## Pastas\n"
         "- `.agents/mail/{agent_id}/` — inbox de cada agente\n"
         "- `.agents/mail/review/` — fila de revisão (lida pelo usuário ao final)\n"
@@ -650,6 +614,10 @@ async def mailbox_watch_inbox(agent_id: str, poll_interval: int = 5, timeout: in
 
     Returns the filename and basic metadata of the first unread message found.
     """
+    error = _validate_agent_id(agent_id)
+    if error:
+        return f"ERROR: {error}"
+
     deadline = time.time() + timeout
     while time.time() < deadline:
         inbox = _inbox_index(agent_id)
@@ -673,6 +641,10 @@ def mailbox_heartbeat(agent_id: str, note: str = "") -> str:
     The leader reads this via mailbox_session_status to distinguish
     a working agent from a crashed one.
     """
+    error = _validate_agent_id(agent_id)
+    if error:
+        return f"ERROR: {error}"
+
     agents_root = Path(os.environ.get("AGENTS_ROOT", ".")).resolve()
     pids_dir = agents_root / ".agents" / "pids"
     pids_dir.mkdir(parents=True, exist_ok=True)
@@ -682,12 +654,18 @@ def mailbox_heartbeat(agent_id: str, note: str = "") -> str:
     return f"Heartbeat registered: {agent_id} at {ts}."
 
 
-def _agent_log_path(agents_root: Path, agent_id: str) -> Path:
-    return agents_root / ".agents" / "logs" / f"{agent_id}.log"
-
-
 def _agent_pid_path(agents_root: Path, agent_id: str) -> Path:
     return agents_root / ".agents" / "pids" / f"{agent_id}.pid"
+
+
+def _create_temp_file(suffix: str, content: str, mode: int | None = None) -> Path:
+    fd, path_str = tempfile.mkstemp(suffix=suffix)
+    path = Path(path_str)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(content)
+    if mode is not None:
+        path.chmod(mode)
+    return path
 
 
 @mcp.tool()
@@ -697,19 +675,18 @@ async def mailbox_spawn_agents(agents: List[dict]) -> str:
     The leader calls this right after mailbox_init_session.
 
     Each item in `agents`:
-      agent_id  — ID of the agent in this session (e.g. "gemini")
+      agent_id  — ID of the agent in this session using 'agentname-role'
+                  (e.g. "gemini-qa")
       cli       — CLI to use: "claude" | "gemini" | "codex"
       role      — "worker" | "qa"
       context   — session context string (leader_id, qa_id, worker_count, AGENTS_ROOT, etc.)
 
-    Logs are written to .agents/logs/<agent_id>.log — read with mailbox_read_agent_log.
-
     Example:
       mailbox_spawn_agents(agents=[
-        {"agent_id": "claude", "cli": "claude", "role": "worker",
-         "context": "Líder: codex. QA: gemini. AGENTS_ROOT: /path/to/project."},
-        {"agent_id": "gemini", "cli": "gemini", "role": "qa",
-         "context": "Líder: codex. Workers: [claude]. AGENTS_ROOT: /path/to/project."},
+        {"agent_id": "claude-backend-senior", "cli": "claude", "role": "worker",
+         "context": "Líder: codex. QA: gemini-qa. AGENTS_ROOT: /path/to/project."},
+        {"agent_id": "gemini-qa", "cli": "gemini", "role": "qa",
+         "context": "Líder: codex. Workers: [claude-backend-senior]. AGENTS_ROOT: /path/to/project."},
       ])
     """
     _CLI_CMD = {
@@ -720,9 +697,6 @@ async def mailbox_spawn_agents(agents: List[dict]) -> str:
 
     prompts_dir = Path(__file__).parent / "prompts"
     agents_root = Path(os.environ.get("AGENTS_ROOT", ".")).resolve()
-    logs_dir = agents_root / ".agents" / "logs"
-    logs_dir.mkdir(parents=True, exist_ok=True)
-
     # Ensure .mcp.json exists in the project root so claude subagents load the
     # mail-agents MCP server when spawned with `claude -p` (non-interactive mode
     # does not read ~/.claude/mcp.json, only the project-level .mcp.json).
@@ -746,6 +720,9 @@ async def mailbox_spawn_agents(agents: List[dict]) -> str:
 
     for spec in agents:
         agent_id = spec["agent_id"]
+        error = _validate_agent_id(agent_id, require_role=True)
+        if error:
+            return f"ERROR: {error}"
         cli_type = spec.get("cli", "claude").lower()
         role = spec.get("role", "worker")
         context = spec.get("context", "")
@@ -763,11 +740,10 @@ async def mailbox_spawn_agents(agents: List[dict]) -> str:
             f"Inicie agora chamando `mailbox_watch_inbox` com `agent_id=\"{agent_id}\"` e `timeout=600`."
         )
 
-        tmp_prompt = Path(tempfile.mktemp(suffix=f"-{agent_id}-prompt.txt"))
-        tmp_prompt.write_text(full_prompt, encoding="utf-8")
-
-        log_path = _agent_log_path(agents_root, agent_id)
-        log_path.write_text(f"[agent {agent_id} started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}]\n")
+        tmp_prompt = _create_temp_file(
+            suffix=f"-{agent_id}-prompt.txt",
+            content=full_prompt,
+        )
 
         pid_path = _agent_pid_path(agents_root, agent_id)
         pid_path.parent.mkdir(parents=True, exist_ok=True)
@@ -780,8 +756,6 @@ async def mailbox_spawn_agents(agents: List[dict]) -> str:
 
         # Inner script: exec replaces bash so the PID captured by the launcher
         # ($!) remains valid for the entire lifetime of the CLI process.
-        # stdbuf -oL forces line-buffered stdout without a PTY, keeping logs
-        # clean and up-to-date for all CLI types (claude, gemini, codex).
         inner_script = (
             f"#!/bin/bash\n"
             f"export AGENTS_ROOT='{agents_root}'\n"
@@ -792,25 +766,28 @@ async def mailbox_spawn_agents(agents: List[dict]) -> str:
             f"    exec {cli_cmd} \"$(cat '{tmp_prompt}')\"\n"
             f"fi\n"
         )
-        inner = Path(tempfile.mktemp(suffix=f"-{agent_id}-inner.sh"))
-        inner.write_text(inner_script, encoding="utf-8")
-        inner.chmod(0o755)
+        inner = _create_temp_file(
+            suffix=f"-{agent_id}-inner.sh",
+            content=inner_script,
+            mode=0o755,
+        )
 
         # Launcher backgrounds inner and saves $! immediately — that PID
         # belongs to the exec chain (bash → stdbuf → cli) so it stays valid.
         launcher_script = (
             f"#!/bin/bash\n"
-            f"bash '{inner}' >> '{log_path}' 2>&1 &\n"
+            f"bash '{inner}' >/dev/null 2>&1 &\n"
             f"echo $! > '{pid_path}'\n"
             f"wait $!\n"
-            f"echo \"[agent {agent_id} exited at $(date)]\" >> '{log_path}'\n"
             f"rm -f '{pid_path}'\n"
             f"rmdir --ignore-fail-on-non-empty '{pid_path.parent}' 2>/dev/null || true\n"
         )
 
-        launcher = Path(tempfile.mktemp(suffix=f"-{agent_id}-launch.sh"))
-        launcher.write_text(launcher_script, encoding="utf-8")
-        launcher.chmod(0o755)
+        launcher = _create_temp_file(
+            suffix=f"-{agent_id}-launch.sh",
+            content=launcher_script,
+            mode=0o755,
+        )
 
         # asyncio subprocess avoids fork() inside the event loop, which would
         # corrupt the FastMCP transport. nohup fully detaches the agent process.
@@ -823,33 +800,7 @@ async def mailbox_spawn_agents(agents: List[dict]) -> str:
         await proc.wait()
         spawned.append(agent_id)
 
-    return (
-        f"Spawned {len(spawned)} agent(s): {', '.join(spawned)}. "
-        f"Logs in {logs_dir}/ — use mailbox_read_agent_log to monitor."
-    )
-
-
-@mcp.tool()
-def mailbox_read_agent_log(agent_id: str, tail: int = 50) -> str:
-    """
-    Read the last N lines of a spawned agent's log.
-    Call this periodically to monitor agent progress without needing terminal access.
-
-    Args:
-      agent_id — the agent whose log to read (e.g. "claude", "gemini")
-      tail     — number of lines to return from the end (default 50)
-    """
-    agents_root = Path(os.environ.get("AGENTS_ROOT", ".")).resolve()
-    log_path = _agent_log_path(agents_root, agent_id)
-
-    if not log_path.exists():
-        return f"No log found for agent '{agent_id}'. Has it been spawned?"
-
-    content = log_path.read_text(encoding="utf-8", errors="replace")
-    lines = [_ANSI_RE.sub('', l).replace('\r', '') for l in content.splitlines()]
-    lines = [l for l in lines if l.strip()]
-    excerpt = lines[-tail:] if len(lines) > tail else lines
-    return "\n".join(excerpt) or "(log vazio)"
+    return f"Spawned {len(spawned)} agent(s): {', '.join(spawned)}."
 
 
 def _kill_all_agents(agents_root: Path) -> None:
@@ -917,6 +868,10 @@ def mailbox_kill_agents(agent_ids: List[str]) -> str:
 
     results = []
     for agent_id in agent_ids:
+        error = _validate_agent_id(agent_id)
+        if error:
+            results.append(f"{agent_id}: error — {error}")
+            continue
         pid_path = _agent_pid_path(agents_root, agent_id)
         if not pid_path.exists():
             results.append(f"{agent_id}: no PID file found")

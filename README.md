@@ -6,6 +6,8 @@ Cada agente (Claude, GPT, Gemini, Deepseek…) tem seu próprio inbox. As mensag
 arquivos `.md` com frontmatter YAML. Um `inbox-index.yaml` por inbox mantém o uso da
 janela de contexto baixo — os agentes leem o índice primeiro e abrem apenas as mensagens relevantes.
 
+Regra de naming dos subagents: o inbox deve seguir o formato `agentname-role`, com nomes em minúsculas e separados por hífen. Exemplo: `claude-backend-senior`.
+
 ## Como funciona
 
 Quando vários agentes de IA trabalham no mesmo projeto, eles não têm como se comunicar
@@ -82,14 +84,23 @@ Os subagents iniciados com CLI `codex` sobem com `-a never`, para não pedir apr
 ```
 .agents/
   mail/
-    mailbox-rules.md     ← arquivo de regras (crie manualmente ou copie da documentação)
+    mailbox-rules.md
     all/                 ← broadcasts
     review/              ← fila do tech lead
-    claude/              ← inboxes por agente
-    gpt/
-    gemini/
+    codex/               ← líder, se aplicável
+    claude-backend-senior/
+    gemini-qa/
   tasks/                 ← arquivos de tasks dos agentes
 ```
+
+## Regra para IDs de subagents
+
+- Todo subagent deve usar `agentname-role`, com pelo menos um hífen.
+- São aceitos apenas `a-z`, `0-9` e `-`.
+- Exemplos válidos: `claude-backend-senior`, `gemini-qa`, `codex-frontend`.
+- Exemplos inválidos: `claude`, `Claude-QA`, `worker_1`.
+
+Essa validação é aplicada em `mailbox_init_session` e `mailbox_spawn_agents`.
 
 ## Ferramentas disponíveis (16)
 

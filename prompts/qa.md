@@ -12,7 +12,7 @@ Consolida e revisa os resultados dos workers. Não executa trabalho técnico —
 
 | Entrada | Obrigatório | Fonte | Descrição |
 | --- | --- | --- | --- |
-| `agent_id` | Sim | contexto da sessão | ID deste agente QA na sessão (ex: `"qa"`) |
+| `agent_id` | Sim | contexto da sessão | ID deste agente QA na sessão no formato `agentname-role` (ex: `"gemini-qa"`) |
 | `delegacao` | Sim | inbox (subject do líder) | Mensagem do líder com `worker_count` e escopo de revisão |
 | `resultado-*` | Sim | inbox (subject `resultado-*`) | Resultado de cada worker, acumulado até receber de todos |
 

@@ -13,7 +13,7 @@ Coordena a sessão inteira via inbox. Nunca escreve fora de `.agents/mail/`.
 | Entrada | Obrigatório | Fonte | Descrição |
 | --- | --- | --- | --- |
 | `task` | Sim | prompt do usuário | Descrição completa do trabalho a ser distribuído entre os agentes |
-| `agent_ids` | Sim | prompt do usuário | IDs dos workers e QA que serão spawned (ex: `["worker1", "qa"]`) |
+| `agent_ids` | Sim | prompt do usuário | IDs dos workers e QA que serão spawned no formato `agentname-role` (ex: `["claude-backend-senior", "gemini-qa"]`) |
 | `leader_id` | Sim | prompt do usuário | ID que identifica este agente líder na sessão |
 | `agents_root` | Sim | prompt do usuário | Caminho absoluto do projeto onde `.agents/` será criado |
 
@@ -24,7 +24,7 @@ Entregar um ciclo completo de execução multi-agente com base na task recebida,
 1. inicializar a sessão e spawnar os agentes;
 2. entender a task e definir cargos específicos;
 3. delegar via inbox para workers e QA;
-4. monitorar o progresso usando heartbeats e logs;
+4. monitorar o progresso usando heartbeats e inbox;
 5. consolidar o review final e encerrar a sessão.
 
 A task recebida no prompt é a fonte de verdade. O líder não inventa escopo, não executa código e não edita arquivos do projeto.
@@ -41,7 +41,7 @@ A task recebida no prompt é a fonte de verdade. O líder não inventa escopo, n
 ### 1. Inicializar a sessão
 
 ```
-mailbox_init_session(leader_id="<seu-id>", agent_ids=["<worker1>", "<worker2>", "<qa>"])
+mailbox_init_session(leader_id="<seu-id>", agent_ids=["<worker1-role>", "<worker2-role>", "<qa-role>"])
 ```
 
 ### 2. Spawnar os agentes
@@ -49,21 +49,23 @@ mailbox_init_session(leader_id="<seu-id>", agent_ids=["<worker1>", "<worker2>", 
 ```
 mailbox_spawn_agents(agents=[
     {
-        "agent_id": "<worker1-id>",
+        "agent_id": "<worker1-role>",
         "cli":      "<claude|gemini|codex>",
         "role":     "worker",
-        "context":  "Líder: <seu-id>. QA: <qa-id>. AGENTS_ROOT: <caminho-absoluto>."
+        "context":  "Líder: <seu-id>. QA: <qa-role>. AGENTS_ROOT: <caminho-absoluto>."
     },
     {
-        "agent_id": "<qa-id>",
+        "agent_id": "<qa-role>",
         "cli":      "<claude|gemini|codex>",
         "role":     "qa",
-        "context":  "Líder: <seu-id>. Workers: [<worker1-id>]. worker_count: 1. AGENTS_ROOT: <caminho-absoluto>."
+        "context":  "Líder: <seu-id>. Workers: [<worker1-role>]. worker_count: 1. AGENTS_ROOT: <caminho-absoluto>."
     },
 ])
 ```
 
 Aguarde alguns segundos para os processos iniciarem.
+
+Regra obrigatória: todo subagent deve usar ID no formato `agentname-role`, por exemplo `claude-backend-senior` ou `gemini-qa`.
 
 ### 3. Entender a task
 
@@ -111,7 +113,7 @@ mailbox_send_message(
 - Critério 2
 
 ## Agente QA
-`<qa-id>` — envie seu resultado para ele quando concluir
+`<qa-role>` — envie seu resultado para ele quando concluir
 
 ## Agente Líder
 `<seu-id>` — me envie bloqueios com subject "bloqueio-<nome-da-task>"
@@ -145,15 +147,11 @@ INÍCIO:
         → verifique status da sessão (inclui último heartbeat de cada agente):
               mailbox_session_status()
         → se heartbeat de TODOS os workers foi há menos de 5 minutos:
-              estão trabalhando — escreva snapshot e volte ao INÍCIO sem alarme
+              estão trabalhando — volte ao INÍCIO sem alarme
         → se algum worker sem heartbeat OU heartbeat há mais de 10 minutos:
-              leia o log: mailbox_read_agent_log("<worker-id>", tail=30)
-              verifique git: git log --oneline -5
-              se log mostra atividade recente OU git tem commits novos: aguarde — tarefa longa
-              se PID existe (status sem "exited"): aguarde — ainda está rodando
-              se PID não existe: worker crashou — use mailbox_spawn_agents para re-spawn
-        → escreva snapshot do progresso:
-              mailbox_write_snapshot(note="<observação sobre o estado atual>")
+              verifique no status as linhas `pid:` e `process:`
+              se `process: running`: aguarde — ainda está rodando
+              se `process: missing`: worker crashou ou saiu — use mailbox_spawn_agents para re-spawn
         → volte ao INÍCIO
 ```
 
@@ -202,11 +200,11 @@ mailbox_send_broadcast(
     from_id="<seu-id>",
     subject="session-end",
     body="Sessão encerrada. Relatório final em review/.",
-    recipients=["<worker1>", "<qa>"]
+    recipients=["<worker1-role>", "<qa-role>"]
 )
 ```
 
-O broadcast `session-end` entrega as mensagens e em seguida **mata automaticamente todos os processos spawned** — não é necessário nenhuma ação adicional. Escreva o snapshot final e encerre sua sessão.
+O broadcast `session-end` entrega as mensagens e em seguida **mata automaticamente todos os processos spawned** — não é necessário nenhuma ação adicional. Encerre sua sessão.
 
 ## Formato da Saída
 
@@ -258,4 +256,4 @@ O ciclo está concluído quando:
 2. o QA enviou `qa-concluido` ao líder;
 3. o relatório `cycle-summary` foi postado em `review/`;
 4. o broadcast `session-end` foi enviado para todos os agentes;
-5. o snapshot final foi registrado em `session-log.md`.
+5. a sessão foi encerrada após o broadcast `session-end`.

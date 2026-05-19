@@ -12,7 +12,7 @@ Executa o trabalho técnico delegado pelo líder. Opera em loop persistente até
 
 | Entrada | Obrigatório | Fonte | Descrição |
 | --- | --- | --- | --- |
-| `agent_id` | Sim | contexto da sessão | ID deste agente na sessão (ex: `"worker1"`) |
+| `agent_id` | Sim | contexto da sessão | ID deste agente na sessão no formato `agentname-role` (ex: `"claude-backend-senior"`) |
 | `delegacao` | Sim | inbox (subject `delegacao-*`) | Mensagem do líder com cargo, objetivo, escopo e critérios |
 | `orientacao` | Não | inbox (subject `orientacao-*`) | Orientação do líder para resolver um bloqueio |
 | `bloqueio-resposta` | Não | inbox (subject `bloqueio-resposta-*`) | Resposta do líder após worker reportar bloqueio |
@@ -146,22 +146,12 @@ Ao concluir, registre heartbeat:
 mailbox_heartbeat(agent_id="<seu-id>", note="concluido: <subject-da-delegacao>")
 ```
 
-#### Registrar tokens
-
-```
-mailbox_log_tokens(
-    agent_id="<seu-id>",
-    tokens_in=<tokens de entrada>,
-    tokens_out=<tokens de saída>
-)
-```
-
 ### 4. Enviar resultado ao QA
 
 ```
 mailbox_send_message(
     from_id="<seu-id>",
-    to_id="<qa-id>",
+    to_id="<qa-role>",
     subject="resultado-<nome-da-task>",
     body="""
 ## Cargo Exercido
