@@ -1,42 +1,42 @@
 # mcp-mail-agents
 
-MCP server for async communication between AI agents via file-based mailboxes.
+Servidor MCP para comunicação assíncrona entre agentes de IA via caixas de entrada baseadas em arquivos.
 
-Each agent (Claude, GPT, Gemini, Deepseek…) has its own inbox. Messages are
-`.md` files with YAML frontmatter. An `inbox-index.yaml` per inbox keeps context
-window usage low — agents read the index first and open only relevant messages.
+Cada agente (Claude, GPT, Gemini, Deepseek…) tem seu próprio inbox. As mensagens são
+arquivos `.md` com frontmatter YAML. Um `inbox-index.yaml` por inbox mantém o uso da
+janela de contexto baixo — os agentes leem o índice primeiro e abrem apenas as mensagens relevantes.
 
-## What is MCP?
+## O que é MCP?
 
-Model Context Protocol (MCP) is an open standard that lets AI models connect to
-external tools and data sources through a uniform interface. Instead of each AI
-needing a custom integration for every tool, MCP works like a universal adapter:
-you build the server once and any MCP-compatible client (Claude Code, Codex CLI,
-Cursor, Windsurf, etc.) can use it immediately.
+Model Context Protocol (MCP) é um padrão aberto que permite que modelos de IA se conectem
+a ferramentas externas e fontes de dados por meio de uma interface uniforme. Em vez de cada
+IA precisar de uma integração personalizada para cada ferramenta, o MCP funciona como um
+adaptador universal: você constrói o servidor uma vez e qualquer cliente compatível com MCP
+(Claude Code, Codex CLI, Cursor, Windsurf, etc.) já consegue usá-lo.
 
-An MCP server exposes **tools** — functions the AI can call — and optionally
-**resources** (read-only data) and **prompts** (reusable templates). The AI
-decides when and how to call them based on the task at hand.
+Um servidor MCP expõe **tools** — funções que a IA pode chamar — e opcionalmente
+**resources** (dados somente leitura) e **prompts** (templates reutilizáveis). A IA decide
+quando e como chamá-los com base na tarefa em andamento.
 
-This package is an MCP server. It exposes tools for reading inboxes, sending
-messages, managing tasks, and coordinating review cycles between AI agents.
+Este pacote é um servidor MCP. Ele expõe ferramentas para ler inboxes, enviar mensagens,
+gerenciar tasks e coordenar ciclos de revisão entre agentes de IA.
 
-## Install & run
+## Instalação e execução
 
 ```bash
 uvx mcp-mail-agents
 ```
 
-Or with pip:
+Ou com pip:
 
 ```bash
 pip install mcp-mail-agents
 mcp-mail-agents
 ```
 
-## Configure in Claude Code
+## Configuração no Claude Code
 
-Add to your project's `.claude/settings.json`:
+Adicione ao `.claude/settings.json` do seu projeto:
 
 ```json
 {
@@ -52,11 +52,11 @@ Add to your project's `.claude/settings.json`:
 }
 ```
 
-`AGENTS_ROOT` is the project root where `.agents/` will be created (defaults to cwd).
+`AGENTS_ROOT` é a raiz do projeto onde `.agents/` será criado (padrão: diretório atual).
 
-## Configure in Codex CLI
+## Configuração no Codex CLI
 
-Add to `~/.codex/config.toml`:
+Adicione ao `~/.codex/config.toml`:
 
 ```toml
 [[mcp_servers]]
@@ -68,45 +68,45 @@ args = ["mcp-mail-agents"]
 AGENTS_ROOT = "."
 ```
 
-## Folder structure created
+## Estrutura de pastas criada
 
 ```
 .agents/
   mail/
-    mailbox-rules.md     ← rules file (create manually or copy from docs)
+    mailbox-rules.md     ← arquivo de regras (crie manualmente ou copie da documentação)
     all/                 ← broadcasts
-    review/              ← tech lead queue
-    claude/              ← per-agent inboxes
+    review/              ← fila do tech lead
+    claude/              ← inboxes por agente
     gpt/
     gemini/
-  tasks/                 ← agent task files
+  tasks/                 ← arquivos de tasks dos agentes
 ```
 
-## Available tools (16)
+## Ferramentas disponíveis (16)
 
-| Tool | Description |
+| Ferramenta | Descrição |
 |---|---|
-| `mailbox_read_inbox` | Read inbox index for an agent |
-| `mailbox_read_message` | Open a specific message |
-| `mailbox_mark_read` | Mark message as read |
-| `mailbox_send_message` | Send message to another agent |
-| `mailbox_send_broadcast` | Broadcast to multiple agents |
-| `mailbox_read_broadcast_inbox` | Read the shared `all/` index |
-| `mailbox_read_broadcast` | Open a broadcast message |
-| `mailbox_create_review` | Post to tech lead review queue |
-| `mailbox_read_review_inbox` | Read tech lead queue index |
-| `mailbox_read_review_message` | Open a review message |
-| `mailbox_list_tasks` | List tasks for an agent |
-| `mailbox_read_task` | Read a task file |
-| `mailbox_update_task_status` | Update task status + rename file |
-| `mailbox_create_task` | Create a new task |
-| `mailbox_list_agents` | List known agents (scan inbox dirs) |
-| `mailbox_read_rules` | Read mailbox-rules.md |
+| `mailbox_read_inbox` | Lê o índice do inbox de um agente |
+| `mailbox_read_message` | Abre uma mensagem específica |
+| `mailbox_mark_read` | Marca mensagem como lida |
+| `mailbox_send_message` | Envia mensagem para outro agente |
+| `mailbox_send_broadcast` | Broadcast para múltiplos agentes |
+| `mailbox_read_broadcast_inbox` | Lê o índice do `all/` compartilhado |
+| `mailbox_read_broadcast` | Abre uma mensagem de broadcast |
+| `mailbox_create_review` | Posta na fila de revisão do tech lead |
+| `mailbox_read_review_inbox` | Lê o índice da fila de revisão |
+| `mailbox_read_review_message` | Abre uma mensagem da fila de revisão |
+| `mailbox_list_tasks` | Lista tasks de um agente |
+| `mailbox_read_task` | Lê um arquivo de task |
+| `mailbox_update_task_status` | Atualiza status da task e renomeia o arquivo |
+| `mailbox_create_task` | Cria uma nova task |
+| `mailbox_list_agents` | Lista agentes conhecidos (scan das pastas de inbox) |
+| `mailbox_read_rules` | Lê o mailbox-rules.md |
 
-## Message format
+## Formato das mensagens
 
 ```
-DD-MM-YYYY-HHmm-{from}-{to}-{subject}.md
+DD-MM-YYYY-HHmm-{from}-{to}-{assunto}.md
 ```
 
 ```md
@@ -127,22 +127,22 @@ status: unread
 ## Próxima Ação Sugerida
 ```
 
-## Publishing updates
+## Publicando atualizações
 
-**1. Edit `pyproject.toml` and bump the version:**
+**1. Edite o `pyproject.toml` e incremente a versão:**
 
 ```toml
 version = "0.1.1"
 ```
 
-**2. Rebuild and publish to PyPI:**
+**2. Reconstrua e publique no PyPI:**
 
 ```bash
 uv build
-uv publish --token pypi-YOUR_TOKEN
+uv publish --token pypi-SEU_TOKEN
 ```
 
-**3. Commit and tag the release on GitHub:**
+**3. Faça commit e crie a tag da release no GitHub:**
 
 ```bash
 git add -A
@@ -151,9 +151,9 @@ git tag v0.1.1
 git push && git push --tags
 ```
 
-After publishing, users running `uvx mcp-mail-agents` will automatically get the
-latest version on their next run.
+Após a publicação, usuários que usam `uvx mcp-mail-agents` receberão a versão mais recente
+automaticamente na próxima execução.
 
-## License
+## Licença
 
 MIT
