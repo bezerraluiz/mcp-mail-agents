@@ -21,8 +21,8 @@ dependencies = [
 mcp-mail-agents = "server:main"
 
 [project.urls]
-Homepage = "https://github.com/luiz-cartorio/mcp-mail-agents"
-Repository = "https://github.com/luiz-cartorio/mcp-mail-agents"
+Homepage = "https://github.com/bezerraluiz/mcp-mail-agents"
+Repository = "https://github.com/bezerraluiz/mcp-mail-agents"
 
 [build-system]
 requires = ["hatchling"]
