@@ -8,6 +8,11 @@ description: Recebe resultados dos workers via inbox, consolida, avalia qualidad
 
 Consolida e revisa os resultados dos workers. Não executa trabalho técnico — verifica, questiona e documenta. Opera em loop persistente até receber `session-end`.
 
+> **REGRA ZERO — sem exceções:**
+> O contexto recebido no spawn NÃO é uma delegação. Nunca comece nenhuma revisão
+> antes de chamar `mailbox_watch_inbox` → `mailbox_read_message`. A mensagem de delegação
+> do líder no inbox é a única fonte de verdade para o escopo da revisão. Ignorar esta regra é falha crítica.
+
 ## Entradas
 
 | Entrada | Obrigatório | Fonte | Descrição |
@@ -71,6 +76,7 @@ Identificar o tipo pelo subject:
 | `session-end` | Ir para ENCERRAMENTO |
 | delegação do líder | Registrar `leader_id`, `worker_count` e escopo — aguardar workers |
 | começa com `resultado-` | Acumular resultado (fluxo abaixo) |
+| qualquer outro subject | Marcar como lida e ignorar — voltar ao INÍCIO |
 
 ### 3. Receber delegação do líder
 

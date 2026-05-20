@@ -15,6 +15,7 @@ import fcntl
 import os
 import re
 import shutil
+import subprocess
 import tempfile
 import time
 from datetime import datetime
@@ -156,6 +157,17 @@ def mailbox_read_inbox(agent_id: str) -> str:
     """
     data = _read_index(agent_id)
     return yaml.dump(data, allow_unicode=True)
+
+
+@mcp.tool()
+def mailbox_read_inbox_unread(agent_id: str) -> str:
+    """
+    Return only unread messages from the agent's inbox index.
+    More efficient than mailbox_read_inbox when there are many read messages.
+    """
+    data = _read_index(agent_id)
+    unread = [m for m in data.get("messages", []) if m.get("status") == "unread"]
+    return yaml.dump({"messages": unread}, allow_unicode=True)
 
 
 def _mark_md_read(path: Path) -> None:
@@ -489,7 +501,6 @@ def mailbox_session_status() -> str:
     inbox exists, unread/total messages, and assigned tasks with their statuses.
     """
     agents_root = Path(os.environ.get("AGENTS_ROOT", ".")).resolve()
-    _cleanup_dead_pids(agents_root)
     md = _mail_dir()
     if not md.exists():
         return "No session found — .agents/mail/ does not exist."
@@ -504,23 +515,22 @@ def mailbox_session_status() -> str:
         data = _read_index(agent_id)
         messages = data.get("messages", [])
         unread = sum(1 for m in messages if m.get("status") == "unread")
-        pid_path = _agent_pid_path(agents_root, agent_id)
-        pid_value = "none"
-        process_state = "missing"
-        if pid_path.exists():
-            pid_value = pid_path.read_text(encoding="utf-8").strip() or "unknown"
-            process_state = "running"
 
         lines.append(f"### {agent_id}")
         lines.append(f"  inbox: {len(messages)} message(s), {unread} unread")
-        lines.append(f"  pid: {pid_value}")
-        lines.append(f"  process: {process_state}")
 
         hb_path = agents_root / ".agents" / "pids" / f"{agent_id}.heartbeat"
         if hb_path.exists():
             lines.append(f"  heartbeat: {hb_path.read_text(encoding='utf-8').strip()}")
         else:
             lines.append("  heartbeat: nenhum")
+
+        log_path = agents_root / ".agents" / "logs" / f"{agent_id}.log"
+        if log_path.exists():
+            size = log_path.stat().st_size
+            lines.append(f"  log: {log_path.name} ({size} bytes)")
+        else:
+            lines.append("  log: nenhum")
 
         if td.exists():
             tasks = sorted(td.glob(f"{agent_id}-*"))
@@ -540,6 +550,57 @@ def mailbox_session_status() -> str:
         lines.append(f"  {len(reviews)} message(s), {unread_reviews} unread")
 
     return "\n".join(lines)
+
+
+@mcp.tool()
+def mailbox_repo_changes(since_minutes: int = 10) -> str:
+    """
+    Show project files changed in the last N minutes (excluding .agents/).
+    Use in the monitoring loop to verify workers are making real progress.
+    Falls back to filesystem mtime if git is not available.
+    """
+    agents_root = Path(os.environ.get("AGENTS_ROOT", ".")).resolve()
+
+    git_check = subprocess.run(
+        ["git", "rev-parse", "--is-inside-work-tree"],
+        cwd=agents_root, capture_output=True, text=True,
+    )
+    if git_check.returncode == 0:
+        status = subprocess.run(
+            ["git", "status", "--short"],
+            cwd=agents_root, capture_output=True, text=True,
+        )
+        commits = subprocess.run(
+            ["git", "log", f"--since={since_minutes} minutes ago", "--oneline"],
+            cwd=agents_root, capture_output=True, text=True,
+        )
+        changed_files = subprocess.run(
+            ["git", "log", f"--since={since_minutes} minutes ago", "--name-only", "--format="],
+            cwd=agents_root, capture_output=True, text=True,
+        )
+        parts = [
+            f"## Working tree status\n{status.stdout.strip() or 'clean'}",
+            f"\n## Commits in last {since_minutes}min\n{commits.stdout.strip() or 'none'}",
+        ]
+        if changed_files.stdout.strip():
+            parts.append(f"\n## Files changed in commits\n{changed_files.stdout.strip()}")
+        return "\n".join(parts)
+
+    # Fallback: filesystem mtime
+    cutoff = time.time() - (since_minutes * 60)
+    changed = []
+    for root_dir, dirs, files in os.walk(agents_root):
+        dirs[:] = [d for d in dirs if d not in {".agents", ".git", "__pycache__", "node_modules"}]
+        for f in files:
+            p = Path(root_dir) / f
+            try:
+                if p.stat().st_mtime > cutoff:
+                    changed.append(str(p.relative_to(agents_root)))
+            except OSError:
+                pass
+    if changed:
+        return "\n".join(sorted(changed))
+    return f"No files changed in the last {since_minutes} minutes."
 
 
 @mcp.tool()
@@ -623,12 +684,20 @@ async def mailbox_watch_inbox(agent_id: str, poll_interval: int = 5, timeout: in
         inbox = _inbox_index(agent_id)
         if inbox.exists():
             data = yaml.safe_load(inbox.read_text(encoding="utf-8")) or {"messages": []}
-            for msg in data.get("messages", []):
-                if msg.get("status") == "unread":
-                    return (
-                        f"New message: {msg['file']} "
-                        f"(from: {msg.get('from')}, subject: {msg.get('subject')})"
+            unread = [m for m in data.get("messages", []) if m.get("status") == "unread"]
+            if unread:
+                first = unread[0]
+                result = (
+                    f"New message: {first['file']} "
+                    f"(from: {first.get('from')}, subject: {first.get('subject')})"
+                )
+                if len(unread) > 1:
+                    extras = "\n".join(
+                        f"  + {m['file']} (from: {m.get('from')}, subject: {m.get('subject')})"
+                        for m in unread[1:]
                     )
+                    result += f"\n\nAlso unread ({len(unread) - 1} more):\n{extras}"
+                return result
         await asyncio.sleep(poll_interval)
     return f"TIMEOUT: no unread messages for '{agent_id}' after {timeout}s."
 
@@ -650,12 +719,15 @@ def mailbox_heartbeat(agent_id: str, note: str = "") -> str:
     pids_dir.mkdir(parents=True, exist_ok=True)
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     hb = pids_dir / f"{agent_id}.heartbeat"
-    hb.write_text(f"{ts} — {note}\n", encoding="utf-8")
+    new_entry = f"{ts} — {note}"
+    existing = hb.read_text(encoding="utf-8").splitlines() if hb.exists() else []
+    entries = ([new_entry] + existing)[:5]
+    hb.write_text("\n".join(entries) + "\n", encoding="utf-8")
     return f"Heartbeat registered: {agent_id} at {ts}."
 
 
 def _agent_pid_path(agents_root: Path, agent_id: str) -> Path:
-    return agents_root / ".agents" / "pids" / f"{agent_id}.pid"
+    return agents_root / ".agents" / "logs" / f"{agent_id}.pid"
 
 
 def _create_temp_file(suffix: str, content: str, mode: int | None = None) -> Path:
@@ -689,6 +761,8 @@ async def mailbox_spawn_agents(agents: List[dict]) -> str:
          "context": "Líder: codex. Workers: [claude-backend-senior]. AGENTS_ROOT: /path/to/project."},
       ])
     """
+    import json as _json
+
     _CLI_CMD = {
         "claude": "claude -p --dangerously-skip-permissions",
         "gemini": "gemini --model auto --approval-mode yolo --prompt",
@@ -697,24 +771,31 @@ async def mailbox_spawn_agents(agents: List[dict]) -> str:
 
     prompts_dir = Path(__file__).parent / "prompts"
     agents_root = Path(os.environ.get("AGENTS_ROOT", ".")).resolve()
-    # Ensure .mcp.json exists in the project root so claude subagents load the
-    # mail-agents MCP server when spawned with `claude -p` (non-interactive mode
-    # does not read ~/.claude/mcp.json, only the project-level .mcp.json).
+    mcp_server_cfg = {
+        "command": "uvx",
+        "args": ["mcp-master-of-puppets"],
+        "env": {"AGENTS_ROOT": str(agents_root)},
+    }
+
+    # Claude: project-level .mcp.json (non-interactive mode ignores ~/.claude/mcp.json)
     mcp_json_path = agents_root / ".mcp.json"
     if not mcp_json_path.exists():
-        import json as _json
         mcp_json_path.write_text(
-            _json.dumps({
-                "mcpServers": {
-                    "mail-agents": {
-                        "command": "uvx",
-                        "args": ["mcp-master-of-puppets"],
-                        "env": {"AGENTS_ROOT": str(agents_root)},
-                    }
-                }
-            }, indent=2),
+            _json.dumps({"mcpServers": {"mail-agents": mcp_server_cfg}}, indent=2),
             encoding="utf-8",
         )
+
+    # Gemini: project-level .gemini/settings.json (always rewrite to keep AGENTS_ROOT current)
+    gemini_dir = agents_root / ".gemini"
+    gemini_dir.mkdir(parents=True, exist_ok=True)
+    (gemini_dir / "settings.json").write_text(
+        _json.dumps({"mcpServers": {"mail-agents": mcp_server_cfg}}, indent=2),
+        encoding="utf-8",
+    )
+
+    # Log directory for all subagents
+    log_dir = agents_root / ".agents" / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
 
     spawned = []
 
@@ -737,6 +818,9 @@ async def mailbox_spawn_agents(agents: List[dict]) -> str:
             "---\n\n"
             "## Contexto da Sessão\n\n"
             f"{context}\n\n"
+            "**IMPORTANTE:** o contexto acima contém apenas metadados da sessão (quem é o líder, "
+            "quem é o QA, onde está o projeto). Ele NÃO contém sua tarefa e NÃO autoriza nenhuma "
+            "ação técnica. Sua tarefa chegará exclusivamente via inbox.\n\n"
             f"Inicie agora chamando `mailbox_watch_inbox` com `agent_id=\"{agent_id}\"` e `timeout=600`."
         )
 
@@ -745,10 +829,13 @@ async def mailbox_spawn_agents(agents: List[dict]) -> str:
             content=full_prompt,
         )
 
-        pid_path = _agent_pid_path(agents_root, agent_id)
-        pid_path.parent.mkdir(parents=True, exist_ok=True)
+        log_file = log_dir / f"{agent_id}.log"
+        pid_file = log_dir / f"{agent_id}.pid"
 
         cli_cmd = _CLI_CMD.get(cli_type, cli_type)
+        # Codex reads ~/.codex/config.toml which may have AGENTS_ROOT="."; override explicitly.
+        if cli_type == "codex":
+            cli_cmd = f"codex -a never -c 'mcp_servers.mail-agents.env.AGENTS_ROOT={agents_root}'"
 
         cli_binary = cli_cmd.split()[0]
         if not shutil.which(cli_binary):
@@ -772,15 +859,13 @@ async def mailbox_spawn_agents(agents: List[dict]) -> str:
             mode=0o755,
         )
 
-        # Launcher backgrounds inner and saves $! immediately — that PID
-        # belongs to the exec chain (bash → stdbuf → cli) so it stays valid.
+        # Launcher: PID written by bash (not Python) — only used by mailbox_kill_agents.
         launcher_script = (
             f"#!/bin/bash\n"
-            f"bash '{inner}' >/dev/null 2>&1 &\n"
-            f"echo $! > '{pid_path}'\n"
+            f"bash '{inner}' >> '{log_file}' 2>&1 &\n"
+            f"echo $! > '{pid_file}'\n"
             f"wait $!\n"
-            f"rm -f '{pid_path}'\n"
-            f"rmdir --ignore-fail-on-non-empty '{pid_path.parent}' 2>/dev/null || true\n"
+            f"rm -f '{pid_file}'\n"
         )
 
         launcher = _create_temp_file(
@@ -800,35 +885,48 @@ async def mailbox_spawn_agents(agents: List[dict]) -> str:
         await proc.wait()
         spawned.append(agent_id)
 
-    return f"Spawned {len(spawned)} agent(s): {', '.join(spawned)}."
+    # Liveness check: give agents 10s to start and produce output.
+    await asyncio.sleep(10)
+    alive, silent = [], []
+    for agent_id in spawned:
+        lf = log_dir / f"{agent_id}.log"
+        if lf.exists() and lf.stat().st_size > 0:
+            alive.append(agent_id)
+        else:
+            silent.append(agent_id)
+
+    result = f"Spawned {len(spawned)} agent(s): {', '.join(spawned)}."
+    if alive:
+        result += f"\nAlive after 10s: {', '.join(alive)}."
+    if silent:
+        result += (
+            f"\nWARNING — no log output after 10s: {', '.join(silent)}."
+            f" Check .agents/logs/ for details."
+        )
+    return result
 
 
 def _kill_all_agents(agents_root: Path) -> None:
     """SIGTERM all spawned agents and remove their PID files."""
     import signal
-    pids_dir = agents_root / ".agents" / "pids"
-    if not pids_dir.exists():
+    log_dir = agents_root / ".agents" / "logs"
+    if not log_dir.exists():
         return
-    for pid_file in pids_dir.glob("*.pid"):
+    for pid_file in log_dir.glob("*.pid"):
         try:
             pid = int(pid_file.read_text().strip())
             os.killpg(os.getpgid(pid), signal.SIGTERM)
         except Exception:
             pass
         pid_file.unlink(missing_ok=True)
-    try:
-        if pids_dir.exists() and not any(pids_dir.iterdir()):
-            pids_dir.rmdir()
-    except Exception:
-        pass
 
 
 def _cleanup_dead_pids(agents_root: Path) -> None:
     """Remove PID files for processes that are no longer running."""
-    pids_dir = agents_root / ".agents" / "pids"
-    if not pids_dir.exists():
+    log_dir = agents_root / ".agents" / "logs"
+    if not log_dir.exists():
         return
-    for pid_file in pids_dir.glob("*.pid"):
+    for pid_file in log_dir.glob("*.pid"):
         try:
             pid = int(pid_file.read_text().strip())
             os.kill(pid, 0)  # signal 0 = existence check only
@@ -836,11 +934,6 @@ def _cleanup_dead_pids(agents_root: Path) -> None:
             pid_file.unlink(missing_ok=True)
         except Exception:
             pass
-    try:
-        if not any(pids_dir.iterdir()):
-            pids_dir.rmdir()
-    except Exception:
-        pass
 
 
 @mcp.tool()
@@ -858,13 +951,13 @@ def mailbox_kill_agents(agent_ids: List[str]) -> str:
 
     agents_root = Path(os.environ.get("AGENTS_ROOT", ".")).resolve()
     _cleanup_dead_pids(agents_root)
-    pids_dir = agents_root / ".agents" / "pids"
+    log_dir = agents_root / ".agents" / "logs"
 
-    if not pids_dir.exists():
-        return "No .agents/pids/ directory found — no agents were spawned."
+    if not log_dir.exists():
+        return "No .agents/logs/ directory found — no agents were spawned."
 
     if agent_ids == ["*"]:
-        agent_ids = [p.stem for p in pids_dir.glob("*.pid")]
+        agent_ids = [p.stem for p in log_dir.glob("*.pid")]
 
     results = []
     for agent_id in agent_ids:
@@ -886,12 +979,6 @@ def mailbox_kill_agents(agent_ids: List[str]) -> str:
             results.append(f"{agent_id}: already exited")
         except Exception as e:
             results.append(f"{agent_id}: error — {e}")
-
-    try:
-        if pids_dir.exists() and not any(pids_dir.iterdir()):
-            pids_dir.rmdir()
-    except Exception:
-        pass
 
     return "\n".join(results)
 

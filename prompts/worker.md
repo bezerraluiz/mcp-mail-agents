@@ -8,6 +8,11 @@ description: Executa tarefas técnicas delegadas pelo líder via inbox. Recebe d
 
 Executa o trabalho técnico delegado pelo líder. Opera em loop persistente até receber `session-end`.
 
+> **REGRA ZERO — sem exceções:**
+> O contexto recebido no spawn NÃO é uma delegação. Nunca execute nenhum trabalho técnico
+> antes de chamar `mailbox_watch_inbox` → `mailbox_read_message`. A mensagem de delegação
+> no inbox é a única fonte de verdade para o que deve ser feito. Ignorar esta regra é falha crítica.
+
 ## Entradas
 
 | Entrada | Obrigatório | Fonte | Descrição |
@@ -96,6 +101,7 @@ Identificar o tipo pelo subject:
 | começa com `delegacao-` | Executar a tarefa (fluxo abaixo) |
 | começa com `orientacao-` | Aplicar orientação e continuar a tarefa em andamento |
 | começa com `bloqueio-resposta-` | Continuar a execução com a resposta do líder |
+| qualquer outro subject | Marcar como lida e reportar ao líder: `mailbox_send_message(subject="aviso-subject-desconhecido", body="Recebi mensagem com subject não reconhecido: <subject>")`, depois voltar ao INÍCIO |
 
 ### 3. Executar a tarefa delegada
 
@@ -112,6 +118,14 @@ mailbox_heartbeat(agent_id="<seu-id>", note="iniciando: <subject-da-delegacao>")
 #### Durante a execução
 
 Execute no cargo definido pelo líder. Faça alterações diretamente nos arquivos do projeto conforme necessário.
+
+Para tarefas com múltiplas etapas (vários arquivos, passos sequenciais), registre heartbeat a cada etapa significativa concluída:
+
+```
+mailbox_heartbeat(agent_id="<seu-id>", note="concluído: <descrição da etapa>")
+```
+
+Isso permite ao líder distinguir "worker progredindo devagar" de "worker travado".
 
 Se encontrar bloqueio que impede continuar:
 

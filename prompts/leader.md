@@ -129,7 +129,11 @@ Após delegar, **entre imediatamente no loop**:
 
 ```
 INÍCIO:
-    resultado = mailbox_watch_inbox("<seu-id>", timeout=120)
+    → Antes de chamar watch_inbox, verifique mensagens pendentes do ciclo anterior:
+          mailbox_read_inbox_unread("<seu-id>")
+          se houver unread → processe cada uma antes de chamar watch_inbox
+
+    resultado = mailbox_watch_inbox("<seu-id>", timeout=300)
 
     → resultado começa com "New message:"?
         → extraia o <filename> (entre "New message: " e " (from:")
@@ -140,20 +144,75 @@ INÍCIO:
               subject da resposta: "orientacao-<nome-da-task>"
         → subject = "qa-concluido"?
               Saia do loop → vá para revisão final
-        → verifique mailbox_read_inbox por mais mensagens não lidas
+        → se watch_inbox retornou "Also unread (N more)":
+              extraia cada filename da seção "Also unread" e processe na mesma iteração
         → volte ao INÍCIO
 
     → resultado começa com "TIMEOUT"?
-        → verifique status da sessão (inclui último heartbeat de cada agente):
+        → verifique status da sessão e progresso no repo:
               mailbox_session_status()
-        → se heartbeat de TODOS os workers foi há menos de 5 minutos:
+              mailbox_repo_changes(since_minutes=5)
+        → se houve mudanças no repo: workers estão progredindo — volte ao INÍCIO sem alarme
+        → se heartbeat de ALGUM worker foi há menos de 5 minutos:
               estão trabalhando — volte ao INÍCIO sem alarme
-        → se algum worker sem heartbeat OU heartbeat há mais de 10 minutos:
-              verifique no status as linhas `pid:` e `process:`
-              se `process: running`: aguarde — ainda está rodando
-              se `process: missing`: worker crashou ou saiu — use mailbox_spawn_agents para re-spawn
+        → se sem mudanças no repo E nenhum worker com heartbeat recente:
+              analise o status de cada worker:
+              → se QUALQUER worker tem `heartbeat: nenhum` E inbox mostra mensagens `unread`:
+                    o worker foi spawned, recebeu a delegação, mas nunca leu o inbox
+                    → ir para FALHA DE SESSÃO
+              → verifique a linha `log:` no status de cada worker:
+                    se `log: nenhum`: worker não produziu saída — crashou ou falhou ao iniciar — use mailbox_spawn_agents para re-spawn
+                    se `log: <arquivo> (0 bytes)`: iniciou mas travou imediatamente — re-spawn
+                    se `log: <arquivo> (N bytes)`: está rodando com saída — aguarde, volte ao INÍCIO
         → volte ao INÍCIO
 ```
+
+### FALHA DE SESSÃO
+
+Quando um ou mais workers estão rodando (processo ativo) mas nunca leram o inbox (delegação permanece unread, sem nenhum heartbeat), a sessão não pode progredir. Execute:
+
+**1. Postar review de falha:**
+
+```
+mailbox_create_review(
+    from_id="<seu-id>",
+    subject="session-failed",
+    body="""
+## Falha de Sessão
+
+### Motivo
+Um ou mais workers foram spawned e receberam delegação via inbox, mas nunca leram suas mensagens. Sem heartbeat registrado.
+
+### Agentes Afetados
+[Liste cada worker com heartbeat: nenhum e mensagens unread]
+
+### Ação Tomada
+Sessão encerrada por inatividade irrecuperável dos agentes.
+"""
+)
+```
+
+**2. Encerrar a sessão:**
+
+```
+mailbox_send_broadcast(
+    from_id="<seu-id>",
+    subject="session-end",
+    body="Sessão encerrada por falha: agentes não responderam ao inbox.",
+    recipients=["<lista de todos os agentes>"]
+)
+```
+
+**3. Reportar diretamente ao usuário** (output de texto, não via inbox):
+
+Informe o usuário com uma mensagem clara, por exemplo:
+
+> **Sessão encerrada por falha.**
+> Os agentes `<worker-id>` foram spawned e receberam delegação, mas nunca responderam ao inbox após o tempo de espera. Nenhum heartbeat foi registrado.
+> Possíveis causas: CLI não inicializou corretamente, prompt de sistema não carregou, ou agente ficou bloqueado antes de chamar `mailbox_watch_inbox`.
+> Nenhuma alteração foi feita no projeto. Você pode tentar novamente ou verificar os logs em `.agents/logs/`.
+
+Após reportar, encerre sua sessão.
 
 ### 7. Revisão final
 
@@ -244,7 +303,8 @@ approved | approved-with-notes | needs-revision
 - **PROIBIÇÃO ABSOLUTA:** nunca usar ferramentas de escrita ou edição de arquivo (`Edit`, `Write`, `Bash`, ou qualquer outra que modifique o projeto). Se sentir vontade de "ajudar" escrevendo código — pare imediatamente e delegue ao worker via `mailbox_send_message`. Qualquer edição fora de `.agents/mail/` é falha crítica da sessão.
 - Toda comunicação com workers e QA é exclusivamente via inbox (`mailbox_send_message`, `mailbox_send_broadcast`).
 - Nunca assumir crash com base só em timeout — verificar heartbeat via `mailbox_session_status` primeiro.
-- Nunca encerrar a sessão antes de receber `qa-concluido`.
+- **Detecção de inatividade irrecuperável:** se um worker tem `heartbeat: nenhum` E mensagens `unread` no inbox após um timeout completo, verifique o campo `log:` via `mailbox_session_status`. Se `log: nenhum` ou `log: 0 bytes`, re-spawne. Se o log tem conteúdo mas sem heartbeat e sem leitura do inbox, a sessão deve ser encerrada com reporte ao usuário.
+- Nunca encerrar a sessão antes de receber `qa-concluido` — exceto em FALHA DE SESSÃO.
 - Nunca ignorar bloqueios reportados pelos workers.
 - O broadcast `session-end` encerra e mata todos os processos automaticamente — não é necessário chamar `mailbox_kill_agents` manualmente.
 

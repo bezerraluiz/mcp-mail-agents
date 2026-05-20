@@ -1,6 +1,6 @@
 [project]
 name = "mcp-master-of-puppets"
-version = "0.5.3"
+version = "0.6.3"
 description = "AI Mailbox MCP Server — async communication between AI agents"
 readme = "README.md"
 license = { text = "MIT" }
