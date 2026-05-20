@@ -30,20 +30,20 @@ Os campos `cli`, `model` e `effort` no spec do spawn são **opcionais** — cada
 ### Backend
 | Role | Quando usar | Primário | Alternativo |
 | --- | --- | --- | --- |
-| `backend/senior-developer` | APIs, banco de dados, autenticação, lógica de negócio backend | claude / claude-sonnet-4-6 | codex / medium effort |
-| `backend/architect` | Decisões arquiteturais, contratos de API, modelagem de dados, ADRs | claude / claude-opus-4-7 | codex / medium effort |
+| `backend-senior` | APIs, banco de dados, autenticação, lógica de negócio backend | claude / claude-sonnet-4-6 | codex / medium effort |
+| `backend-architect` | Decisões arquiteturais, contratos de API, modelagem de dados, ADRs | claude / claude-opus-4-7 | codex / medium effort |
 
 ### Frontend
 | Role | Quando usar | Primário | Alternativo |
 | --- | --- | --- | --- |
-| `frontend/senior-developer` | Componentes React, TypeScript, integração com APIs, performance | claude / claude-sonnet-4-6 | codex / medium effort |
-| `frontend/ux-ui` | Interfaces, fluxos de usuário, design system, acessibilidade | claude / claude-sonnet-4-6 | codex / medium effort |
+| `frontend-senior` | Componentes React, TypeScript, integração com APIs, performance | claude / claude-sonnet-4-6 | codex / medium effort |
+| `frontend-ux-ui` | Interfaces, fluxos de usuário, design system, acessibilidade | claude / claude-sonnet-4-6 | codex / medium effort |
 
 ### QA
 | Role | Quando usar | Primário | Alternativo |
 | --- | --- | --- | --- |
-| `qa/reviewer` | Revisão de completude, qualidade de código e coerência entre entregas | claude / claude-sonnet-4-6 | codex / medium effort |
-| `qa/automation-engineer` | Cobertura de testes, estratégia de automação e CI/CD | claude / claude-sonnet-4-6 | codex / medium effort |
+| `qa-reviewer` | Revisão de completude, qualidade de código e coerência entre entregas | claude / claude-sonnet-4-6 | codex / medium effort |
+| `qa-automation` | Cobertura de testes, estratégia de automação e CI/CD | claude / claude-sonnet-4-6 | codex / medium effort |
 
 ### Genérico
 | Role | Quando usar | Primário | Alternativo |
@@ -84,23 +84,23 @@ mailbox_init_session(leader_id="<seu-id>", agent_ids=["<worker1-role>", "<worker
 ```
 mailbox_spawn_agents(agents=[
     {
-        "agent_id": "<worker1-role>",
-        "role":     "backend/senior-developer",
-        "context":  "Líder: <seu-id>. QA: <qa-role>. AGENTS_ROOT: <caminho-absoluto>."
+        "agent_id": "<worker1-id>",
+        "role":     "backend-senior",
+        "context":  "Líder: <seu-id>. QA: <qa-id>. AGENTS_ROOT: <caminho-absoluto>."
         // cli e model são opcionais — a skill usa claude + claude-sonnet-4-6 por padrão
     },
     {
-        "agent_id": "<qa-role>",
-        "role":     "qa/reviewer",
-        "context":  "Líder: <seu-id>. Workers: [<worker1-role>]. worker_count: 1. AGENTS_ROOT: <caminho-absoluto>."
+        "agent_id": "<qa-id>",
+        "role":     "qa-reviewer",
+        "context":  "Líder: <seu-id>. Workers: [<worker1-id>]. worker_count: 1. AGENTS_ROOT: <caminho-absoluto>."
     },
 ])
 ```
 
 Para sobrescrever CLI ou modelo de uma skill específica, passe os campos explicitamente:
 ```
-{"agent_id": "gemini-backend-senior", "cli": "gemini", "model": "gemini-2.5-pro", "role": "backend/senior-developer", ...}
-{"agent_id": "claude-architect",      "model": "claude-opus-4-7",                  "role": "backend/architect",        ...}
+{"agent_id": "gemini-backend", "cli": "gemini", "model": "gemini-2.5-pro", "role": "backend-senior", ...}
+{"agent_id": "claude-architect", "model": "claude-opus-4-7", "role": "backend-architect", ...}
 ```
 
 Aguarde alguns segundos para os processos iniciarem.
@@ -120,12 +120,12 @@ Não há nada para ler em task files — passe direto para o passo 4.
 ### 4. Definir cargos dinamicamente
 
 Determine o **cargo específico** de cada agente com base na task e na skill atribuída:
-- `backend/senior-developer`: `"Desenvolvedor Backend Sênior"`
-- `backend/architect`: `"Arquiteto de Software"`
-- `frontend/senior-developer`: `"Desenvolvedor Frontend Sênior"`
-- `frontend/ux-ui`: `"Designer UX/UI"`
-- `qa/reviewer`: `"Revisor de QA"`
-- `qa/automation-engineer`: `"Engenheiro de QA — Automação"`
+- `backend-senior`: `"Desenvolvedor Backend Sênior"`
+- `backend-architect`: `"Arquiteto de Software"`
+- `frontend-senior`: `"Desenvolvedor Frontend Sênior"`
+- `frontend-ux-ui`: `"Designer UX/UI"`
+- `qa-reviewer`: `"Revisor de QA"`
+- `qa-automation`: `"Engenheiro de QA — Automação"`
 
 Nunca use cargos genéricos.
 
