@@ -813,6 +813,12 @@ async def mailbox_spawn_agents(agents: List[dict]) -> str:
             return f"ERROR: prompt file not found — {role_file}"
 
         role_prompt = role_file.read_text(encoding="utf-8")
+        # Strip YAML frontmatter so the prompt never starts with '---',
+        # which yargs (Gemini CLI) misparses as the end-of-options marker.
+        if role_prompt.startswith("---\n"):
+            end = role_prompt.find("\n---\n", 4)
+            if end != -1:
+                role_prompt = role_prompt[end + 5:]
         full_prompt = (
             f"{role_prompt}\n\n"
             "---\n\n"
@@ -837,8 +843,10 @@ async def mailbox_spawn_agents(agents: List[dict]) -> str:
         if cli_type == "codex":
             cli_cmd = f"codex -a never -c 'mcp_servers.mail-agents.env.AGENTS_ROOT={agents_root}'"
         # Claude -p silently ignores .mcp.json on validation errors; pass config explicitly.
+        # The '--' terminates option parsing so --mcp-config <configs...> doesn't
+        # greedily consume the prompt as a second config argument.
         if cli_type == "claude":
-            cli_cmd = f"claude -p --dangerously-skip-permissions --mcp-config '{mcp_json_path}'"
+            cli_cmd = f"claude -p --dangerously-skip-permissions --mcp-config '{mcp_json_path}' --"
 
         cli_binary = cli_cmd.split()[0]
         if not shutil.which(cli_binary):
