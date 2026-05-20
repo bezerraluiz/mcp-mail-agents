@@ -924,7 +924,7 @@ async def mailbox_spawn_agents(agents: List[dict]) -> str:
                 suffix=f"-{agent_id}-prompt.txt", content=f"{context_block}\n\n{kickoff}"
             )
             _effort = spec.get("effort") or skill_meta.get("alternative_effort")
-            _effort_flag = f"--reasoning-effort {_effort} " if _effort else ""
+            _effort_flag = f"-c 'model_reasoning_effort=\"{_effort}\"' " if _effort else ""
             _model_flag = f"--model {model} " if model else ""
             inner_script = (
                 f"#!/bin/bash\n"
