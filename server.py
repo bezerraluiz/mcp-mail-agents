@@ -771,19 +771,19 @@ async def mailbox_spawn_agents(agents: List[dict]) -> str:
 
     prompts_dir = Path(__file__).parent / "prompts"
     agents_root = Path(os.environ.get("AGENTS_ROOT", ".")).resolve()
+    _mcp_bin = shutil.which("mcp-master-of-puppets") or "mcp-master-of-puppets"
     mcp_server_cfg = {
-        "command": "uvx",
-        "args": ["mcp-master-of-puppets"],
+        "command": _mcp_bin,
+        "args": [],
         "env": {"AGENTS_ROOT": str(agents_root)},
     }
 
-    # Claude: project-level .mcp.json (non-interactive mode ignores ~/.claude/mcp.json)
+    # Claude: project-level .mcp.json (always rewrite to keep binary path current)
     mcp_json_path = agents_root / ".mcp.json"
-    if not mcp_json_path.exists():
-        mcp_json_path.write_text(
-            _json.dumps({"mcpServers": {"mail-agents": mcp_server_cfg}}, indent=2),
-            encoding="utf-8",
-        )
+    mcp_json_path.write_text(
+        _json.dumps({"mcpServers": {"mail-agents": mcp_server_cfg}}, indent=2),
+        encoding="utf-8",
+    )
 
     # Gemini: project-level .gemini/settings.json (always rewrite to keep AGENTS_ROOT current)
     gemini_dir = agents_root / ".gemini"
@@ -836,6 +836,9 @@ async def mailbox_spawn_agents(agents: List[dict]) -> str:
         # Codex reads ~/.codex/config.toml which may have AGENTS_ROOT="."; override explicitly.
         if cli_type == "codex":
             cli_cmd = f"codex -a never -c 'mcp_servers.mail-agents.env.AGENTS_ROOT={agents_root}'"
+        # Claude -p silently ignores .mcp.json on validation errors; pass config explicitly.
+        if cli_type == "claude":
+            cli_cmd = f"claude -p --dangerously-skip-permissions --mcp-config '{mcp_json_path}'"
 
         cli_binary = cli_cmd.split()[0]
         if not shutil.which(cli_binary):
