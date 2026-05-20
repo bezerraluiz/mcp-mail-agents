@@ -833,60 +833,133 @@ async def mailbox_spawn_agents(agents: List[dict]) -> str:
         _rec_model = skill_meta.get("recommended_model")
         _rec_cli = skill_meta.get("recommended_cli", "claude")
         model = spec.get("model") or (_rec_model if cli_type == _rec_cli else None)
-        full_prompt = (
-            f"{role_prompt}\n\n"
-            "---\n\n"
+        role_slug = role.replace("/", "-")
+        skill_description = skill_meta.get("description", role_slug)
+        context_block = (
             "## Contexto da Sessão\n\n"
             f"{context}\n\n"
             "**IMPORTANTE:** o contexto acima contém apenas metadados da sessão (quem é o líder, "
             "quem é o QA, onde está o projeto). Ele NÃO contém sua tarefa e NÃO autoriza nenhuma "
-            "ação técnica. Sua tarefa chegará exclusivamente via inbox.\n\n"
-            f"Inicie agora chamando `mailbox_watch_inbox` com `agent_id=\"{agent_id}\"` e `timeout=600`."
+            "ação técnica. Sua tarefa chegará exclusivamente via inbox."
         )
-
-        tmp_prompt = _create_temp_file(
-            suffix=f"-{agent_id}-prompt.txt",
-            content=full_prompt,
+        kickoff = (
+            f"Inicie agora chamando `mailbox_watch_inbox` com "
+            f"`agent_id=\"{agent_id}\"` e `timeout=600`."
         )
 
         log_file = log_dir / f"{agent_id}.log"
         pid_file = log_dir / f"{agent_id}.pid"
 
+        # Inner script: exec replaces bash so the PID captured by the launcher
+        # ($!) remains valid for the entire lifetime of the CLI process.
         if cli_type == "claude":
-            _model_flag = f"--model {model} " if model else ""
-            cli_cmd = (
-                f"claude -p --dangerously-skip-permissions {_model_flag}"
-                f"--mcp-config '{mcp_json_path}' --"
+            if not shutil.which("claude"):
+                return f"ERROR: CLI 'claude' não encontrado no PATH para agente '{agent_id}'"
+            # Write skill to .claude/skills/ — auto-loaded by Claude Code per project
+            claude_skills_dir = agents_root / ".claude" / "skills"
+            claude_skills_dir.mkdir(parents=True, exist_ok=True)
+            (claude_skills_dir / f"{agent_id}.md").write_text(role_prompt, encoding="utf-8")
+            # Session context goes in --append-system-prompt; -p carries only the kickoff
+            tmp_context = _create_temp_file(
+                suffix=f"-{agent_id}-context.txt", content=context_block
             )
+            tmp_prompt = _create_temp_file(
+                suffix=f"-{agent_id}-prompt.txt", content=kickoff
+            )
+            _model_flag = f"--model {model} " if model else ""
+            inner_script = (
+                f"#!/bin/bash\n"
+                f"export AGENTS_ROOT='{agents_root}'\n"
+                f"cd '{agents_root}'\n"
+                f"CONTEXT=$(cat '{tmp_context}')\n"
+                f"if command -v stdbuf >/dev/null 2>&1; then\n"
+                f"    exec stdbuf -oL -eL claude -p --dangerously-skip-permissions {_model_flag}"
+                f"--append-system-prompt \"$CONTEXT\" --mcp-config '{mcp_json_path}' -- "
+                f"\"$(cat '{tmp_prompt}')\"\n"
+                f"else\n"
+                f"    exec claude -p --dangerously-skip-permissions {_model_flag}"
+                f"--append-system-prompt \"$CONTEXT\" --mcp-config '{mcp_json_path}' -- "
+                f"\"$(cat '{tmp_prompt}')\"\n"
+                f"fi\n"
+            )
+
         elif cli_type == "gemini":
+            if not shutil.which("gemini"):
+                return f"ERROR: CLI 'gemini' não encontrado no PATH para agente '{agent_id}'"
+            # Write skill to .agents/skills/{role_slug}/ — auto-loaded by Gemini CLI
+            skill_dir = agents_root / ".agents" / "skills" / role_slug
+            skill_dir.mkdir(parents=True, exist_ok=True)
+            (skill_dir / "SKILL.md").write_text(
+                f"---\nname: {role_slug}\ndescription: {skill_description}\n---\n\n{role_prompt}",
+                encoding="utf-8",
+            )
+            tmp_prompt = _create_temp_file(
+                suffix=f"-{agent_id}-prompt.txt", content=f"{context_block}\n\n{kickoff}"
+            )
             _gemini_model = model or "auto"
-            cli_cmd = f"gemini --model {_gemini_model} --approval-mode yolo --prompt"
+            inner_script = (
+                f"#!/bin/bash\n"
+                f"export AGENTS_ROOT='{agents_root}'\n"
+                f"cd '{agents_root}'\n"
+                f"if command -v stdbuf >/dev/null 2>&1; then\n"
+                f"    exec stdbuf -oL -eL gemini --model {_gemini_model} --approval-mode yolo "
+                f"--prompt \"$(cat '{tmp_prompt}')\"\n"
+                f"else\n"
+                f"    exec gemini --model {_gemini_model} --approval-mode yolo "
+                f"--prompt \"$(cat '{tmp_prompt}')\"\n"
+                f"fi\n"
+            )
+
         elif cli_type == "codex":
-            # effort: spec override > skill frontmatter alternative_effort
+            if not shutil.which("codex"):
+                return f"ERROR: CLI 'codex' não encontrado no PATH para agente '{agent_id}'"
+            # Write skill to .agents/skills/{role_slug}/ — auto-loaded by Codex CLI
+            skill_dir = agents_root / ".agents" / "skills" / role_slug
+            skill_dir.mkdir(parents=True, exist_ok=True)
+            (skill_dir / "SKILL.md").write_text(
+                f"---\nname: {role_slug}\ndescription: {skill_description}\n---\n\n{role_prompt}",
+                encoding="utf-8",
+            )
+            tmp_prompt = _create_temp_file(
+                suffix=f"-{agent_id}-prompt.txt", content=f"{context_block}\n\n{kickoff}"
+            )
             _effort = spec.get("effort") or skill_meta.get("alternative_effort")
             _effort_flag = f"--reasoning-effort {_effort} " if _effort else ""
             _model_flag = f"--model {model} " if model else ""
-            # Codex reads ~/.codex/config.toml which may have AGENTS_ROOT="."; override explicitly.
-            cli_cmd = f"codex -a never {_model_flag}{_effort_flag}-c 'mcp_servers.mail-agents.env.AGENTS_ROOT={agents_root}'"
+            inner_script = (
+                f"#!/bin/bash\n"
+                f"export AGENTS_ROOT='{agents_root}'\n"
+                f"cd '{agents_root}'\n"
+                f"if command -v stdbuf >/dev/null 2>&1; then\n"
+                f"    exec stdbuf -oL -eL codex -a never {_model_flag}{_effort_flag}"
+                f"-c 'mcp_servers.mail-agents.env.AGENTS_ROOT={agents_root}' "
+                f"\"$(cat '{tmp_prompt}')\"\n"
+                f"else\n"
+                f"    exec codex -a never {_model_flag}{_effort_flag}"
+                f"-c 'mcp_servers.mail-agents.env.AGENTS_ROOT={agents_root}' "
+                f"\"$(cat '{tmp_prompt}')\"\n"
+                f"fi\n"
+            )
+
         else:
-            cli_cmd = _CLI_CMD.get(cli_type, cli_type)
-
-        cli_binary = cli_cmd.split()[0]
-        if not shutil.which(cli_binary):
-            return f"ERROR: CLI '{cli_binary}' não encontrado no PATH para agente '{agent_id}'"
-
-        # Inner script: exec replaces bash so the PID captured by the launcher
-        # ($!) remains valid for the entire lifetime of the CLI process.
-        inner_script = (
-            f"#!/bin/bash\n"
-            f"export AGENTS_ROOT='{agents_root}'\n"
-            f"cd '{agents_root}'\n"
-            f"if command -v stdbuf >/dev/null 2>&1; then\n"
-            f"    exec stdbuf -oL -eL {cli_cmd} \"$(cat '{tmp_prompt}')\"\n"
-            f"else\n"
-            f"    exec {cli_cmd} \"$(cat '{tmp_prompt}')\"\n"
-            f"fi\n"
-        )
+            fallback_cmd = _CLI_CMD.get(cli_type, cli_type)
+            cli_binary = fallback_cmd.split()[0]
+            if not shutil.which(cli_binary):
+                return f"ERROR: CLI '{cli_binary}' não encontrado no PATH para agente '{agent_id}'"
+            tmp_prompt = _create_temp_file(
+                suffix=f"-{agent_id}-prompt.txt",
+                content=f"{role_prompt}\n\n---\n\n{context_block}\n\n{kickoff}",
+            )
+            inner_script = (
+                f"#!/bin/bash\n"
+                f"export AGENTS_ROOT='{agents_root}'\n"
+                f"cd '{agents_root}'\n"
+                f"if command -v stdbuf >/dev/null 2>&1; then\n"
+                f"    exec stdbuf -oL -eL {fallback_cmd} \"$(cat '{tmp_prompt}')\"\n"
+                f"else\n"
+                f"    exec {fallback_cmd} \"$(cat '{tmp_prompt}')\"\n"
+                f"fi\n"
+            )
         inner = _create_temp_file(
             suffix=f"-{agent_id}-inner.sh",
             content=inner_script,
