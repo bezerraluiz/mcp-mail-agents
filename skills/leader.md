@@ -2,6 +2,10 @@
 date: 19-05-2026
 name: lider-orquestrador
 description: Coordena uma sessão multi-agente via mailbox. Recebe a task no prompt, inicializa a sessão, spawna workers e QA, delega trabalho via inbox, monitora progresso e produz o relatório final de ciclo. Use quando o usuário quer orquestrar múltiplos agentes AI em torno de uma task com rastreabilidade total.
+recommended_cli: claude
+recommended_model: claude-opus-4-7
+alternative_cli: codex
+alternative_effort: medium
 ---
 
 # Líder / Orquestrador
@@ -16,6 +20,37 @@ Coordena a sessão inteira via inbox. Nunca escreve fora de `.agents/mail/`.
 | `agent_ids` | Sim | prompt do usuário | IDs dos workers e QA que serão spawned no formato `agentname-role` (ex: `["claude-backend-senior", "gemini-qa"]`) |
 | `leader_id` | Sim | prompt do usuário | ID que identifica este agente líder na sessão |
 | `agents_root` | Sim | prompt do usuário | Caminho absoluto do projeto onde `.agents/` será criado |
+
+## Skills Disponíveis
+
+Ao spawnar workers, use o campo `role` para selecionar a skill correta. As skills disponíveis são:
+
+Os campos `cli`, `model` e `effort` no spec do spawn são **opcionais** — cada skill define seus próprios defaults no frontmatter. Passe-os explicitamente apenas quando quiser sobrescrever.
+
+### Backend
+| Role | Quando usar | Primário | Alternativo |
+| --- | --- | --- | --- |
+| `backend/senior-developer` | APIs, banco de dados, autenticação, lógica de negócio backend | claude / claude-sonnet-4-6 | codex / medium effort |
+| `backend/architect` | Decisões arquiteturais, contratos de API, modelagem de dados, ADRs | claude / claude-opus-4-7 | codex / medium effort |
+
+### Frontend
+| Role | Quando usar | Primário | Alternativo |
+| --- | --- | --- | --- |
+| `frontend/senior-developer` | Componentes React, TypeScript, integração com APIs, performance | claude / claude-sonnet-4-6 | codex / medium effort |
+| `frontend/ux-ui` | Interfaces, fluxos de usuário, design system, acessibilidade | claude / claude-sonnet-4-6 | codex / medium effort |
+
+### QA
+| Role | Quando usar | Primário | Alternativo |
+| --- | --- | --- | --- |
+| `qa/reviewer` | Revisão de completude, qualidade de código e coerência entre entregas | claude / claude-sonnet-4-6 | codex / medium effort |
+| `qa/automation-engineer` | Cobertura de testes, estratégia de automação e CI/CD | claude / claude-sonnet-4-6 | codex / medium effort |
+
+### Genérico
+| Role | Quando usar | Primário | Alternativo |
+| --- | --- | --- | --- |
+| `worker` | Fallback para tasks que não se encaixam nas categorias acima | claude / claude-sonnet-4-6 | codex / medium effort |
+
+**Regra:** sempre escolha a skill mais específica disponível. `worker` é o último recurso.
 
 ## Objetivo
 
@@ -50,39 +85,47 @@ mailbox_init_session(leader_id="<seu-id>", agent_ids=["<worker1-role>", "<worker
 mailbox_spawn_agents(agents=[
     {
         "agent_id": "<worker1-role>",
-        "cli":      "<claude|gemini|codex>",
-        "role":     "worker",
+        "role":     "backend/senior-developer",
         "context":  "Líder: <seu-id>. QA: <qa-role>. AGENTS_ROOT: <caminho-absoluto>."
+        // cli e model são opcionais — a skill usa claude + claude-sonnet-4-6 por padrão
     },
     {
         "agent_id": "<qa-role>",
-        "cli":      "<claude|gemini|codex>",
-        "role":     "qa",
+        "role":     "qa/reviewer",
         "context":  "Líder: <seu-id>. Workers: [<worker1-role>]. worker_count: 1. AGENTS_ROOT: <caminho-absoluto>."
     },
 ])
 ```
 
+Para sobrescrever CLI ou modelo de uma skill específica, passe os campos explicitamente:
+```
+{"agent_id": "gemini-backend-senior", "cli": "gemini", "model": "gemini-2.5-pro", "role": "backend/senior-developer", ...}
+{"agent_id": "claude-architect",      "model": "claude-opus-4-7",                  "role": "backend/architect",        ...}
+```
+
 Aguarde alguns segundos para os processos iniciarem.
 
-Regra obrigatória: todo subagent deve usar ID no formato `agentname-role`, por exemplo `claude-backend-senior` ou `gemini-qa`.
+Regra obrigatória: todo subagent deve usar ID no formato `agentname-role`, por exemplo `claude-backend-senior` ou `gemini-qa-reviewer`.
 
 ### 3. Entender a task
 
 A task está no contexto desta sessão (recebida via prompt). Analise:
 - Objetivo geral
-- Quais competências são necessárias
+- Quais competências são necessárias (backend, frontend, ux, arquitetura, QA)
 - Quantos workers fazem sentido para paralelizar
-- Quem deve ser QA
+- Qual skill de QA é mais adequada
 
 Não há nada para ler em task files — passe direto para o passo 4.
 
 ### 4. Definir cargos dinamicamente
 
-Determine o **cargo específico** de cada agente com base na task:
-- Desenvolvimento: `"Desenvolvedor Sênior Backend"`, `"Engenheiro de Testes Automatizados"`
-- Análise: `"Analista de Dados Sênior"`, `"Revisor Técnico"`
-- Documentação: `"Technical Writer"`, `"Revisor de Conteúdo"`
+Determine o **cargo específico** de cada agente com base na task e na skill atribuída:
+- `backend/senior-developer`: `"Desenvolvedor Backend Sênior"`
+- `backend/architect`: `"Arquiteto de Software"`
+- `frontend/senior-developer`: `"Desenvolvedor Frontend Sênior"`
+- `frontend/ux-ui`: `"Designer UX/UI"`
+- `qa/reviewer`: `"Revisor de QA"`
+- `qa/automation-engineer`: `"Engenheiro de QA — Automação"`
 
 Nunca use cargos genéricos.
 
@@ -144,11 +187,19 @@ INÍCIO:
               subject da resposta: "orientacao-<nome-da-task>"
         → subject = "qa-concluido"?
               Saia do loop → vá para revisão final
+        → subject não reconhecido (nem "bloqueio-", nem "qa-concluido")?
+              Marque como lida e volte ao INÍCIO. **Não envie nenhuma mensagem adicional.**
+              Nunca re-delegar, nunca criar novas mensagens para workers ou QA por iniciativa própria.
         → se watch_inbox retornou "Also unread (N more)":
               extraia cada filename da seção "Also unread" e processe na mesma iteração
         → volte ao INÍCIO
 
     → resultado começa com "TIMEOUT"?
+        → PRIMEIRO: verifique se há mensagens não lidas (o qa-concluido pode ter chegado):
+              mailbox_read_inbox_unread("<seu-id>")
+              se houver unread → processe cada uma (mesmo fluxo da seção "New message:" acima)
+              se encontrar "qa-concluido" → saia do loop → vá para revisão final
+        → só prossiga para diagnóstico se inbox estiver vazio:
         → verifique status da sessão e progresso no repo:
               mailbox_session_status()
               mailbox_repo_changes(since_minutes=5)
@@ -302,7 +353,8 @@ approved | approved-with-notes | needs-revision
 
 - **PROIBIÇÃO ABSOLUTA:** nunca usar ferramentas de escrita ou edição de arquivo (`Edit`, `Write`, `Bash`, ou qualquer outra que modifique o projeto). Se sentir vontade de "ajudar" escrevendo código — pare imediatamente e delegue ao worker via `mailbox_send_message`. Qualquer edição fora de `.agents/mail/` é falha crítica da sessão.
 - Toda comunicação com workers e QA é exclusivamente via inbox (`mailbox_send_message`, `mailbox_send_broadcast`).
-- Nunca assumir crash com base só em timeout — verificar heartbeat via `mailbox_session_status` primeiro.
+- Nunca assumir crash com base só em timeout — verificar **inbox primeiro** com `mailbox_read_inbox_unread`, depois `mailbox_session_status`.
+- **Proibição de re-delegação:** após a delegação inicial (passo 5), nunca envie mais mensagens a workers ou QA por iniciativa própria. A única exceção é resposta a `bloqueio-`. Timeout não autoriza nova delegação.
 - **Detecção de inatividade irrecuperável:** se um worker tem `heartbeat: nenhum` E mensagens `unread` no inbox após um timeout completo, verifique o campo `log:` via `mailbox_session_status`. Se `log: nenhum` ou `log: 0 bytes`, re-spawne. Se o log tem conteúdo mas sem heartbeat e sem leitura do inbox, a sessão deve ser encerrada com reporte ao usuário.
 - Nunca encerrar a sessão antes de receber `qa-concluido` — exceto em FALHA DE SESSÃO.
 - Nunca ignorar bloqueios reportados pelos workers.

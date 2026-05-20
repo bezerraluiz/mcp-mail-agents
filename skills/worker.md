@@ -2,6 +2,10 @@
 date: 19-05-2026
 name: worker-executor
 description: Executa tarefas técnicas delegadas pelo líder via inbox. Recebe delegação com cargo, objetivo e critérios de conclusão, executa o trabalho diretamente no projeto, sinaliza progresso via heartbeat e envia resultado ao QA. Use quando um agente precisa fazer trabalho concreto (código, análise, escrita) como parte de uma sessão multi-agente.
+recommended_cli: claude
+recommended_model: claude-sonnet-4-6
+alternative_cli: codex
+alternative_effort: medium
 ---
 
 # Worker / Executor
@@ -44,16 +48,12 @@ A mensagem de delegação é a fonte de verdade para o escopo do trabalho. O wor
 
 ### Princípios de Desenvolvimento (OBRIGATÓRIOS)
 
-Estes princípios devem ser seguidos em toda implementação:
-
 - **KISS** - Manter simplicidade operacional: resolver o problema atual com o menor número de partes possível, preferir clareza à esperteza, reduzir abstrações desnecessárias
 - **YAGNI** - Não implementar antecipadamente: construir apenas o que o problema atual exige, adiar abstrações até necessidade comprovada
 - **DRY** - Evitar duplicação de conhecimento: cada regra importante deve ter uma fonte principal de verdade, consolidar repetição real, não criar abstrações prematuras
 - **Less Code, Best Code** - Menos código é melhor código: cada linha adicionada é uma linha que precisa ser lida, mantida e testada. Preferir deletar código a adicionar. A melhor solução geralmente é a que resolve o problema com menos código.
 
 ### Object Calisthenics (OBRIGATÓRIOS)
-
-Regras de design que forçam código orientado a objetos com alta coesão e baixo acoplamento:
 
 1. **Um nível de indentação por método** — se há mais de um nível, extrair método
 2. **Não usar `else`** — usar early return, guard clauses ou polimorfismo
@@ -125,8 +125,6 @@ Para tarefas com múltiplas etapas (vários arquivos, passos sequenciais), regis
 mailbox_heartbeat(agent_id="<seu-id>", note="concluído: <descrição da etapa>")
 ```
 
-Isso permite ao líder distinguir "worker progredindo devagar" de "worker travado".
-
 Se encontrar bloqueio que impede continuar:
 
 ```
@@ -197,33 +195,6 @@ Ao receber subject `session-end`:
 
 1. `mailbox_read_message` + `mailbox_mark_read`
 2. Encerre sua sessão. Não há mais nada a fazer.
-
-## Formato da Saída
-
-O resultado enviado ao QA deve seguir a estrutura da seção 4. Campos obrigatórios:
-
-```markdown
-## Cargo Exercido
-<cargo exato atribuído pelo líder>
-
-## O Que Foi Feito
-<descrição objetiva do trabalho realizado>
-
-## Arquivos Alterados
-- `src/foo/bar.ts` — criado
-- `src/foo/baz.ts` — modificado
-
-## Critérios Atendidos
-- [x] Critério 1
-- [x] Critério 2
-- [ ] Critério 3 — não atendido por <motivo>
-
-## Problemas Encontrados
-<desvios, limitações ou dependências não resolvidas>
-
-## Próxima Ação Sugerida
-<o que o QA deve verificar primeiro>
-```
 
 ## Regras Críticas
 

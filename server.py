@@ -770,7 +770,7 @@ async def mailbox_spawn_agents(agents: List[dict]) -> str:
         "codex":  "codex -a never",
     }
 
-    prompts_dir = Path(__file__).parent / "prompts"
+    skills_dir = Path(__file__).parent / "skills"
     agents_root = Path(os.environ.get("AGENTS_ROOT", ".")).resolve()
     # sys.argv[0] is the running binary — works regardless of PATH or install method.
     _mcp_bin = sys.argv[0] if sys.argv else (shutil.which("mcp-master-of-puppets") or "mcp-master-of-puppets")
@@ -806,21 +806,33 @@ async def mailbox_spawn_agents(agents: List[dict]) -> str:
         error = _validate_agent_id(agent_id, require_role=True)
         if error:
             return f"ERROR: {error}"
-        cli_type = spec.get("cli", "claude").lower()
         role = spec.get("role", "worker")
         context = spec.get("context", "")
 
-        role_file = prompts_dir / f"{role}.md"
+        role_file = skills_dir / f"{role}.md"
         if not role_file.exists():
-            return f"ERROR: prompt file not found — {role_file}"
+            return f"ERROR: skill file not found — {role_file}"
 
         role_prompt = role_file.read_text(encoding="utf-8")
-        # Strip YAML frontmatter so the prompt never starts with '---',
-        # which yargs (Gemini CLI) misparses as the end-of-options marker.
+        # Parse frontmatter for skill defaults (recommended_cli, recommended_model).
+        skill_meta: dict = {}
         if role_prompt.startswith("---\n"):
             end = role_prompt.find("\n---\n", 4)
             if end != -1:
+                for _line in role_prompt[4:end].splitlines():
+                    if ": " in _line:
+                        _k, _, _v = _line.partition(": ")
+                        skill_meta[_k.strip()] = _v.strip()
+                # Strip frontmatter so the prompt never starts with '---',
+                # which yargs (Gemini CLI) misparses as the end-of-options marker.
                 role_prompt = role_prompt[end + 5:]
+
+        # cli: explicit spec > skill frontmatter > "claude"
+        cli_type = spec.get("cli", skill_meta.get("recommended_cli", "claude")).lower()
+        # model: explicit spec > skill frontmatter (only when cli matches recommended_cli)
+        _rec_model = skill_meta.get("recommended_model")
+        _rec_cli = skill_meta.get("recommended_cli", "claude")
+        model = spec.get("model") or (_rec_model if cli_type == _rec_cli else None)
         full_prompt = (
             f"{role_prompt}\n\n"
             "---\n\n"
@@ -840,15 +852,24 @@ async def mailbox_spawn_agents(agents: List[dict]) -> str:
         log_file = log_dir / f"{agent_id}.log"
         pid_file = log_dir / f"{agent_id}.pid"
 
-        cli_cmd = _CLI_CMD.get(cli_type, cli_type)
-        # Codex reads ~/.codex/config.toml which may have AGENTS_ROOT="."; override explicitly.
-        if cli_type == "codex":
-            cli_cmd = f"codex -a never -c 'mcp_servers.mail-agents.env.AGENTS_ROOT={agents_root}'"
-        # Claude -p silently ignores .mcp.json on validation errors; pass config explicitly.
-        # The '--' terminates option parsing so --mcp-config <configs...> doesn't
-        # greedily consume the prompt as a second config argument.
         if cli_type == "claude":
-            cli_cmd = f"claude -p --dangerously-skip-permissions --mcp-config '{mcp_json_path}' --"
+            _model_flag = f"--model {model} " if model else ""
+            cli_cmd = (
+                f"claude -p --dangerously-skip-permissions {_model_flag}"
+                f"--mcp-config '{mcp_json_path}' --"
+            )
+        elif cli_type == "gemini":
+            _gemini_model = model or "auto"
+            cli_cmd = f"gemini --model {_gemini_model} --approval-mode yolo --prompt"
+        elif cli_type == "codex":
+            # effort: spec override > skill frontmatter alternative_effort
+            _effort = spec.get("effort") or skill_meta.get("alternative_effort")
+            _effort_flag = f"--reasoning-effort {_effort} " if _effort else ""
+            _model_flag = f"--model {model} " if model else ""
+            # Codex reads ~/.codex/config.toml which may have AGENTS_ROOT="."; override explicitly.
+            cli_cmd = f"codex -a never {_model_flag}{_effort_flag}-c 'mcp_servers.mail-agents.env.AGENTS_ROOT={agents_root}'"
+        else:
+            cli_cmd = _CLI_CMD.get(cli_type, cli_type)
 
         cli_binary = cli_cmd.split()[0]
         if not shutil.which(cli_binary):
