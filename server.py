@@ -16,6 +16,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 from datetime import datetime
@@ -771,7 +772,8 @@ async def mailbox_spawn_agents(agents: List[dict]) -> str:
 
     prompts_dir = Path(__file__).parent / "prompts"
     agents_root = Path(os.environ.get("AGENTS_ROOT", ".")).resolve()
-    _mcp_bin = shutil.which("mcp-master-of-puppets") or "mcp-master-of-puppets"
+    # sys.argv[0] is the running binary — works regardless of PATH or install method.
+    _mcp_bin = sys.argv[0] if sys.argv else (shutil.which("mcp-master-of-puppets") or "mcp-master-of-puppets")
     mcp_server_cfg = {
         "command": _mcp_bin,
         "args": [],
