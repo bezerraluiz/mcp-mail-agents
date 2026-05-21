@@ -1,0 +1,12 @@
+  {
+    "mcpServers": {
+      "mail-agents": {
+        "command": "/home/bezerraluiz/.local/bin/mcp-master-of-puppets",
+        "args": [],
+        "env": {
+          "AGENTS_ROOT": "."
+        }
+      }
+    }
+  }
+

@@ -207,20 +207,26 @@ INÍCIO:
         → se heartbeat de ALGUM worker foi há menos de 5 minutos:
               estão trabalhando — volte ao INÍCIO sem alarme
         → se sem mudanças no repo E nenhum worker com heartbeat recente:
-              analise o status de cada worker:
-              → se QUALQUER worker tem `heartbeat: nenhum` E inbox mostra mensagens `unread`:
-                    o worker foi spawned, recebeu a delegação, mas nunca leu o inbox
-                    → ir para FALHA DE SESSÃO
-              → verifique a linha `log:` no status de cada worker:
-                    se `log: nenhum`: worker não produziu saída — crashou ou falhou ao iniciar — use mailbox_spawn_agents para re-spawn
-                    se `log: <arquivo> (0 bytes)`: iniciou mas travou imediatamente — re-spawn
-                    se `log: <arquivo> (N bytes)`: está rodando com saída — aguarde, volte ao INÍCIO
+              analise o status de cada worker via mailbox_session_status():
+              → verifique a linha `log:` de CADA worker ANTES de qualquer outra decisão:
+                    se `log: nenhum`: worker não produziu saída — crashou ou falhou ao iniciar
+                          → use mailbox_spawn_agents para re-spawn IMEDIATAMENTE
+                          → aguarde 10s e volte ao INÍCIO — NÃO continue o diagnóstico
+                    se `log: <arquivo> (0 bytes)`: iniciou mas travou imediatamente
+                          → re-spawn IMEDIATAMENTE, mesmo fluxo acima
+                    se `log: <arquivo> (N bytes)`: está rodando com saída
+                          → aguarde, volte ao INÍCIO
+              → só avance para FALHA DE SESSÃO se, após re-spawn, o worker AINDA tiver
+                `log: nenhum` ou `log: 0 bytes` num segundo timeout completo:
+                    isso indica falha irrecuperável de CLI — ir para FALHA DE SESSÃO
+              → se worker tem log com conteúdo MAS `heartbeat: nenhum` E inbox `unread`:
+                    o worker está rodando mas não está usando as ferramentas MCP — ir para FALHA DE SESSÃO
         → volte ao INÍCIO
 ```
 
 ### FALHA DE SESSÃO
 
-Quando um ou mais workers estão rodando (processo ativo) mas nunca leram o inbox (delegação permanece unread, sem nenhum heartbeat), a sessão não pode progredir. Execute:
+Quando um ou mais workers estão em falha irrecuperável após re-spawn (log ausente ou 0 bytes após segunda tentativa), ou quando estão rodando mas nunca usam as ferramentas MCP (log com conteúdo, mas delegação permanece unread e heartbeat nunca registrado), a sessão não pode progredir. Execute:
 
 **1. Postar review de falha:**
 
@@ -352,6 +358,7 @@ approved | approved-with-notes | needs-revision
 ## Regras Críticas
 
 - **PROIBIÇÃO ABSOLUTA:** nunca usar ferramentas de escrita ou edição de arquivo (`Edit`, `Write`, `Bash`, ou qualquer outra que modifique o projeto). Se sentir vontade de "ajudar" escrevendo código — pare imediatamente e delegue ao worker via `mailbox_send_message`. Qualquer edição fora de `.agents/mail/` é falha crítica da sessão.
+- **PROIBIÇÃO DE IMPROVISAÇÃO:** quando um worker falhar ou ficar inativo, a única resposta válida é: (1) re-spawn do mesmo worker, ou (2) declarar FALHA DE SESSÃO e reportar ao usuário. É **estritamente proibido** assumir o trabalho do worker inativo, construir o resultado "localmente" ou redistribuir a tarefa para outro agente sem re-spawn. Fazê-lo viola o protocolo e produz resultados sem rastreabilidade.
 - Toda comunicação com workers e QA é exclusivamente via inbox (`mailbox_send_message`, `mailbox_send_broadcast`).
 - Nunca assumir crash com base só em timeout — verificar **inbox primeiro** com `mailbox_read_inbox_unread`, depois `mailbox_session_status`.
 - **Proibição de re-delegação:** após a delegação inicial (passo 5), nunca envie mais mensagens a workers ou QA por iniciativa própria. A única exceção é resposta a `bloqueio-`. Timeout não autoriza nova delegação.
